@@ -6,3 +6,6 @@ PyMuPDF
 beautifulsoup4
 soundfile
 numpy
+fastapi
+uvicorn
+python-multipart
