@@ -1,0 +1,8 @@
+gradio>=4.0
+kokoro>=0.9
+misaki[en]
+ebooklib
+PyMuPDF
+beautifulsoup4
+soundfile
+numpy
