@@ -49,7 +49,7 @@
       {:else}
         Drop EPUB/PDF or click to upload
       {/if}
-      <input type="file" accept=".epub,.pdf" class="hidden" on:change={handleFile} disabled={uploading} />
+      <input type="file" accept=".epub,.pdf" class="hidden" onchange={handleFile} disabled={uploading} />
     </label>
     {#if error}
       <p class="mt-2 text-sm text-red-400">{error}</p>
@@ -63,7 +63,7 @@
         class:bg-zinc-800={$currentChapterIndex === chapter.index}
         class:text-white={$currentChapterIndex === chapter.index}
         class:text-zinc-400={$currentChapterIndex !== chapter.index}
-        on:click={() => selectChapter(chapter.index)}
+        onclick={() => selectChapter(chapter.index)}
       >
         {chapter.title}
       </button>

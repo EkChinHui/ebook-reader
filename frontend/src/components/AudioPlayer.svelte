@@ -34,7 +34,7 @@
     <button
       class="rounded-full bg-indigo-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-40"
       disabled={!$bookId || $currentChapterIndex < 0}
-      on:click={() => $isPlaying ? stop() : play()}
+      onclick={() => $isPlaying ? stop() : play()}
     >
       {$isPlaying ? 'Stop' : 'Play'}
     </button>
@@ -65,5 +65,5 @@
     </label>
   </div>
 
-  <audio bind:this={audioEl} on:ended={handleEnded} class="hidden" />
+  <audio bind:this={audioEl} onended={handleEnded} class="hidden"></audio>
 </footer>

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { chapterText, chapters, currentChapterIndex } from '../lib/stores'
 
+  let currentTitle: string
   $: currentTitle = $chapters.find(c => c.index === $currentChapterIndex)?.title ?? ''
 </script>
 
