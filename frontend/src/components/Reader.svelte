@@ -34,6 +34,12 @@
   }
 
   let readerEl: HTMLElement
+
+  // Scroll to top when chapter changes
+  $: if ($currentChapterIndex >= 0 && readerEl) {
+    readerEl.scrollTop = 0
+  }
+
   $: if ($currentSegmentIndex >= 0 && readerEl) {
     tick().then(() => {
       const active = readerEl.querySelector('[data-active="true"]')
