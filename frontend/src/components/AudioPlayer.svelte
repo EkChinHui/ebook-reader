@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { bookId, currentChapterIndex, chapters, chapterText, isPlaying, selectedVoice, playbackSpeed, segments, currentSegmentIndex } from '../lib/stores'
-  import { narrateTimed, audioUrl, fetchChapter } from '../lib/api'
+  import { bookId, currentChapterIndex, chapters, chapterText, isPlaying, selectedVoice, playbackSpeed, segments, currentSegmentIndex, fileName } from '../lib/stores'
+  import { fetchChapter } from '../lib/api'
+  import { getCachedAudio, setCachedAudio, saveReadingState } from '../lib/storage'
 
   const VOICES = [
     { id: 'af_heart', label: 'Heart' },
@@ -16,55 +17,320 @@
     { id: 'bm_lewis', label: 'Lewis' },
   ]
 
-  let audioEl: HTMLAudioElement
   let loading = false
   let currentTime = 0
   let duration = 0
 
+  // Web Audio API state
+  let audioCtx: AudioContext | null = null
+  let gainNode: GainNode | null = null
+  let activeSourceNodes: AudioBufferSourceNode[] = []
+  let decodedChunks: { buffer: AudioBuffer; startTime: number }[] = []
+  let totalAudioDuration = 0
+  let playbackStartCtxTime = 0
+  let playbackStartOffset = 0
+  let animFrameId: number | null = null
+  let abortController: AbortController | null = null
+  let streamingDone = false
+  let playGeneration = 0
+  let cachedWavChunks: ArrayBuffer[] = []
+  let lastSaveTime = 0
+
+  function ensureAudioCtx(): AudioContext {
+    if (!audioCtx) {
+      audioCtx = new AudioContext()
+      gainNode = audioCtx.createGain()
+      gainNode.connect(audioCtx.destination)
+    }
+    return audioCtx
+  }
+
+  function stopAllSources() {
+    for (const s of activeSourceNodes) {
+      try { s.onended = null; s.stop() } catch {}
+    }
+    activeSourceNodes = []
+  }
+
+  function stopTimeTracking() {
+    if (animFrameId !== null) {
+      cancelAnimationFrame(animFrameId)
+      animFrameId = null
+    }
+  }
+
+  function persistPosition() {
+    if ($bookId) {
+      saveReadingState({
+        fileName: $fileName,
+        chapterIndex: $currentChapterIndex,
+        currentTime,
+        voice: $selectedVoice,
+        speed: $playbackSpeed,
+      })
+    }
+  }
+
+  function startTimeTracking() {
+    stopTimeTracking()
+    function tick() {
+      if (audioCtx && $isPlaying) {
+        const elapsed = audioCtx.currentTime - playbackStartCtxTime
+        currentTime = Math.min(playbackStartOffset + elapsed, totalAudioDuration)
+        duration = totalAudioDuration
+
+        if ($segments.length > 0) {
+          let idx = $segments.findIndex(s => currentTime >= s.start && currentTime < s.end)
+          if (idx === -1 && currentTime >= $segments[$segments.length - 1].start) {
+            idx = $segments.length - 1
+          }
+          if (idx !== $currentSegmentIndex) {
+            $currentSegmentIndex = idx
+          }
+        }
+
+        const now = Date.now()
+        if (now - lastSaveTime > 3000) {
+          lastSaveTime = now
+          persistPosition()
+        }
+      }
+      animFrameId = requestAnimationFrame(tick)
+    }
+    animFrameId = requestAnimationFrame(tick)
+  }
+
+  function scheduleOneChunk(chunkIndex: number) {
+    const ctx = audioCtx!
+    const chunk = decodedChunks[chunkIndex]
+    const curTime = (ctx.currentTime - playbackStartCtxTime) + playbackStartOffset
+    const chunkEnd = chunk.startTime + chunk.buffer.duration
+    if (chunkEnd <= curTime) return
+
+    const offsetInChunk = Math.max(0, curTime - chunk.startTime)
+    const source = ctx.createBufferSource()
+    source.buffer = chunk.buffer
+    source.connect(gainNode!)
+
+    const realTimeDelay = chunk.startTime + offsetInChunk - curTime
+    source.start(ctx.currentTime + Math.max(0, realTimeDelay), offsetInChunk)
+
+    source.onended = () => {
+      const idx = activeSourceNodes.indexOf(source)
+      if (idx >= 0) activeSourceNodes.splice(idx, 1)
+      if (streamingDone && activeSourceNodes.length === 0 && $isPlaying) {
+        $isPlaying = false
+        $currentSegmentIndex = -1
+        stopTimeTracking()
+      }
+    }
+    activeSourceNodes.push(source)
+  }
+
+  function rescheduleAllFrom(fromTime: number) {
+    stopAllSources()
+    playbackStartOffset = Math.max(0, Math.min(fromTime, totalAudioDuration))
+    playbackStartCtxTime = audioCtx!.currentTime
+    currentTime = playbackStartOffset
+
+    for (let i = 0; i < decodedChunks.length; i++) {
+      const chunkEnd = decodedChunks[i].startTime + decodedChunks[i].buffer.duration
+      if (chunkEnd <= playbackStartOffset) continue
+      scheduleOneChunk(i)
+    }
+  }
+
+  async function playFromCache(cached: { wavChunks: ArrayBuffer[]; segments: import('../lib/api').TimedSegment[] }) {
+    loading = true
+    const gen = ++playGeneration
+
+    const ctx = ensureAudioCtx()
+    if (ctx.state === 'suspended') await ctx.resume()
+
+    decodedChunks = []
+    totalAudioDuration = 0
+    $segments = cached.segments
+    $currentSegmentIndex = -1
+    currentTime = 0
+    duration = 0
+    cachedWavChunks = []
+
+    for (const wavBuf of cached.wavChunks) {
+      if (gen !== playGeneration) return
+      const audioBuffer = await ctx.decodeAudioData(wavBuf.slice(0))
+      const chunkStart = totalAudioDuration
+      decodedChunks = [...decodedChunks, { buffer: audioBuffer, startTime: chunkStart }]
+      totalAudioDuration += audioBuffer.duration
+    }
+
+    duration = totalAudioDuration
+    streamingDone = true
+    loading = false
+
+    playbackStartCtxTime = ctx.currentTime
+    playbackStartOffset = 0
+    $isPlaying = true
+
+    for (let i = 0; i < decodedChunks.length; i++) {
+      scheduleOneChunk(i)
+    }
+    startTimeTracking()
+  }
+
   async function play() {
     if (!$bookId || $currentChapterIndex < 0 || loading) return
 
+    // Check audio cache first
+    const cached = getCachedAudio($bookId, $currentChapterIndex, $selectedVoice, $playbackSpeed)
+    if (cached) {
+      await playFromCache(cached)
+      return
+    }
+
     loading = true
+    streamingDone = false
+    const gen = ++playGeneration
+
+    const ctx = ensureAudioCtx()
+    if (ctx.state === 'suspended') await ctx.resume()
+
+    decodedChunks = []
+    totalAudioDuration = 0
+    $segments = []
+    $currentSegmentIndex = -1
+    currentTime = 0
+    duration = 0
+    cachedWavChunks = []
+
+    abortController = new AbortController()
+    const url = `/api/narrate-stream/${$bookId}/${$currentChapterIndex}?voice=${encodeURIComponent($selectedVoice)}&speed=${$playbackSpeed}`
+
     try {
-      const result = await narrateTimed($bookId, $currentChapterIndex, $selectedVoice, 1.0)
-      $segments = result.segments
-      $currentSegmentIndex = -1
-      audioEl.src = audioUrl(result.audio_id)
-      audioEl.playbackRate = $playbackSpeed
-      await audioEl.play()
+      const response = await fetch(url, { signal: abortController.signal })
+      if (!response.ok) throw new Error('Failed to start narration')
+
+      const reader = response.body!.getReader()
+      const decoder = new TextDecoder()
+      let textBuffer = ''
+
+      playbackStartCtxTime = ctx.currentTime
+      playbackStartOffset = 0
       $isPlaying = true
-    } catch (e) {
-      console.error('Narration failed:', e)
+      if (gen === playGeneration) loading = false
+      startTimeTracking()
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (gen !== playGeneration) break
+
+        textBuffer += decoder.decode(value, { stream: true })
+        const lines = textBuffer.split('\n')
+        textBuffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const data = JSON.parse(line.slice(6))
+          if (data.done) continue
+
+          // Decode base64 audio chunk
+          const binaryStr = atob(data.audio_b64)
+          const bytes = new Uint8Array(binaryStr.length)
+          for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i)
+
+          // Copy WAV bytes for cache before decodeAudioData detaches the buffer
+          const wavCopy = bytes.buffer.slice(0)
+          const audioBuffer = await ctx.decodeAudioData(bytes.buffer)
+
+          if (gen !== playGeneration) break
+
+          cachedWavChunks.push(wavCopy)
+
+          const chunkStart = totalAudioDuration
+          decodedChunks = [...decodedChunks, { buffer: audioBuffer, startTime: chunkStart }]
+          totalAudioDuration += audioBuffer.duration
+          duration = totalAudioDuration
+
+          $segments = [...$segments, ...data.segments]
+
+          if ($isPlaying) {
+            scheduleOneChunk(decodedChunks.length - 1)
+          }
+        }
+      }
+
+      if (gen === playGeneration) {
+        streamingDone = true
+        // Save to audio cache
+        if ($bookId && cachedWavChunks.length > 0) {
+          setCachedAudio($bookId, $currentChapterIndex, $selectedVoice, $playbackSpeed, {
+            wavChunks: cachedWavChunks,
+            segments: $segments,
+          })
+        }
+      }
+    } catch (e: any) {
+      if (e.name !== 'AbortError') {
+        console.error('Narration failed:', e)
+      }
     } finally {
-      loading = false
+      if (gen === playGeneration) {
+        loading = false
+        streamingDone = true
+      }
     }
   }
 
   function stop() {
-    audioEl.pause()
-    audioEl.src = ''
+    persistPosition()
+    abortController?.abort()
+    abortController = null
+    stopAllSources()
+    stopTimeTracking()
     $isPlaying = false
     $currentSegmentIndex = -1
     $segments = []
     currentTime = 0
     duration = 0
+    decodedChunks = []
+    totalAudioDuration = 0
+    streamingDone = false
+    cachedWavChunks = []
   }
 
   function togglePlayPause() {
-    if (!$isPlaying && !audioEl.src) {
+    if (!$isPlaying && decodedChunks.length === 0) {
       play()
-    } else if ($isPlaying) {
-      audioEl.pause()
+    } else if ($isPlaying && audioCtx) {
+      audioCtx.suspend()
       $isPlaying = false
-    } else if (audioEl.src) {
-      audioEl.play()
+      stopTimeTracking()
+      persistPosition()
+    } else if (!$isPlaying && audioCtx && decodedChunks.length > 0) {
+      audioCtx.resume()
       $isPlaying = true
+      startTimeTracking()
     }
   }
 
   function skip(seconds: number) {
-    if (!audioEl.src) return
-    audioEl.currentTime = Math.max(0, Math.min(audioEl.currentTime + seconds, audioEl.duration || 0))
+    if (decodedChunks.length === 0) return
+    rescheduleAllFrom(currentTime + seconds)
+  }
+
+  function handleSeek(e: Event) {
+    const input = e.target as HTMLInputElement
+    rescheduleAllFrom(parseFloat(input.value))
+  }
+
+  function cycleSpeed() {
+    const speeds = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+    const current = speeds.findIndex(s => Math.abs(s - $playbackSpeed) < 0.05)
+    $playbackSpeed = speeds[(current + 1) % speeds.length]
+    if ($isPlaying) {
+      stop()
+      play()
+    }
   }
 
   async function changeChapter(delta: number) {
@@ -73,7 +339,7 @@
     if (newIndex < 0 || newIndex >= $chapters.length) return
 
     const wasPlaying = $isPlaying
-    if ($isPlaying) stop()
+    stop()
 
     $currentChapterIndex = newIndex
     const content = await fetchChapter($bookId, newIndex)
@@ -82,39 +348,11 @@
     if (wasPlaying) play()
   }
 
-  // Apply speed changes in real-time
-  $: if (audioEl) {
-    audioEl.playbackRate = $playbackSpeed
-  }
-
-  function cycleSpeed() {
-    const speeds = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
-    const current = speeds.findIndex(s => Math.abs(s - $playbackSpeed) < 0.05)
-    $playbackSpeed = speeds[(current + 1) % speeds.length]
-  }
-
-  function handleTimeUpdate() {
-    currentTime = audioEl.currentTime
-    duration = audioEl.duration || 0
-    if ($segments.length === 0) return
-    const t = audioEl.currentTime
-    let idx = $segments.findIndex(s => t >= s.start && t < s.end)
-    if (idx === -1 && t >= $segments[$segments.length - 1].start) {
-      idx = $segments.length - 1
-    }
-    if (idx !== $currentSegmentIndex) {
-      $currentSegmentIndex = idx
-    }
-  }
-
-  function handleEnded() {
-    $isPlaying = false
-    $currentSegmentIndex = -1
-  }
-
-  function handleSeek(e: Event) {
-    const input = e.target as HTMLInputElement
-    audioEl.currentTime = parseFloat(input.value)
+  // Reset audio state when chapter changes externally (e.g. Sidebar clicks)
+  let prevChapterIndex = $currentChapterIndex
+  $: if ($currentChapterIndex !== prevChapterIndex) {
+    prevChapterIndex = $currentChapterIndex
+    stop()
   }
 
   function formatTime(s: number): string {
@@ -127,7 +365,7 @@
   $: canPlay = $bookId && $currentChapterIndex >= 0 && !loading
   $: hasPrev = $currentChapterIndex > 0
   $: hasNext = $currentChapterIndex < $chapters.length - 1
-  $: hasAudio = !!audioEl?.src
+  $: hasAudio = decodedChunks.length > 0
   $: progress = duration > 0 ? (currentTime / duration) * 100 : 0
 </script>
 
@@ -279,6 +517,4 @@
       </div>
     {/if}
   </div>
-
-  <audio bind:this={audioEl} ontimeupdate={handleTimeUpdate} onended={handleEnded} class="hidden"></audio>
 </footer>

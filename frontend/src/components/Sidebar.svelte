@@ -1,6 +1,7 @@
 <script lang="ts">
   import { uploadBook, fetchChapter } from '../lib/api'
-  import { bookId, chapters, currentChapterIndex, chapterText, fileName } from '../lib/stores'
+  import { bookId, chapters, currentChapterIndex, chapterText, fileName, selectedVoice, playbackSpeed } from '../lib/stores'
+  import { saveBookFile, saveReadingState } from '../lib/storage'
 
   let uploading = false
   let error = ''
@@ -22,6 +23,7 @@
       $bookId = result.book_id
       $chapters = result.chapters
       $fileName = file.name
+      saveBookFile(file)
       if (result.chapters.length > 0) {
         await selectChapter(0)
       }
@@ -37,6 +39,7 @@
     $currentChapterIndex = index
     const content = await fetchChapter($bookId, index)
     $chapterText = content.text
+    saveReadingState({ fileName: $fileName, chapterIndex: index, currentTime: 0, voice: $selectedVoice, speed: $playbackSpeed })
   }
 </script>
 

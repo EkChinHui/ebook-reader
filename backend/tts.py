@@ -50,6 +50,55 @@ def stream_audio(text: str, voice: str, speed: float):
         yield audio_array_to_wav_bytes(buffer)
 
 
+def generate_audio_chunks_with_timing(text: str, voice: str, speed: float):
+    """Yield (wav_bytes, segments) for each pipeline chunk with cumulative timing."""
+    if not text or not text.strip():
+        return
+
+    pipeline = get_pipeline()
+    lang = "b" if voice.startswith("b") else "a"
+    pipeline.lang_code = lang
+
+    cumulative_samples = 0
+
+    for result in pipeline(text, voice=voice, speed=speed):
+        if result.audio is not None:
+            audio_np = result.audio.numpy() if hasattr(result.audio, "numpy") else np.array(result.audio)
+            chunk_offset = cumulative_samples / SAMPLE_RATE
+            cumulative_samples += len(audio_np)
+
+            chunk_segments = []
+            if result.tokens:
+                group_text = ""
+                group_start = None
+                group_end = 0.0
+                group_count = 0
+                for token in result.tokens:
+                    if not token.text:
+                        continue
+                    word = token.text + token.whitespace
+                    start = chunk_offset + (token.start_ts or 0)
+                    end = chunk_offset + (token.end_ts or 0)
+                    if group_start is None:
+                        group_start = start
+                    group_text += word
+                    group_end = end
+                    group_count += 1
+                    if group_count >= 4:
+                        chunk_segments.append({"text": group_text, "start": round(group_start, 3), "end": round(group_end, 3)})
+                        group_text = ""
+                        group_start = None
+                        group_count = 0
+                if group_text:
+                    chunk_segments.append({"text": group_text, "start": round(group_start, 3), "end": round(group_end, 3)})
+            else:
+                start_time = chunk_offset
+                end_time = cumulative_samples / SAMPLE_RATE
+                chunk_segments.append({"text": result.graphemes, "start": round(start_time, 3), "end": round(end_time, 3)})
+
+            yield audio_array_to_wav_bytes(audio_np), chunk_segments
+
+
 def generate_audio_with_timing(text: str, voice: str, speed: float) -> tuple[bytes, list[dict]]:
     """Generate full audio and return (wav_bytes, segments) with word-level timing."""
     if not text or not text.strip():
