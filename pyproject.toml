@@ -1,0 +1,17 @@
+[project]
+name = "ebook-reader"
+version = "0.1.0"
+description = "Web-based ebook reader with TTS narration"
+requires-python = ">=3.11"
+dependencies = [
+    "ebooklib",
+    "PyMuPDF",
+    "beautifulsoup4",
+    "soundfile",
+    "numpy",
+    "kokoro>=0.9",
+    "misaki[en]",
+    "fastapi",
+    "uvicorn",
+    "python-multipart",
+]

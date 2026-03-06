@@ -20,6 +20,7 @@ A web-based ebook reader with text-to-speech narration powered by [Kokoro TTS](h
 ### Prerequisites
 
 - Python 3.11+
+- [uv](https://docs.astral.sh/uv/)
 - Node.js 18+
 
 ### Installation
@@ -29,10 +30,8 @@ A web-based ebook reader with text-to-speech narration powered by [Kokoro TTS](h
 git clone git@github.com:EkChinHui/ebook-reader.git
 cd ebook-reader
 
-# Backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+# Backend (uv auto-creates the venv and installs dependencies)
+uv sync
 
 # Frontend
 cd frontend

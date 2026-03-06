@@ -3,7 +3,7 @@ set -e
 cd "$(dirname "$0")"
 
 # Start FastAPI backend
-.venv/bin/uvicorn backend.server:app --host 0.0.0.0 --port 8000 --reload &
+uv run uvicorn backend.server:app --host 0.0.0.0 --port 8000 --reload &
 BACKEND_PID=$!
 
 # Start Vite dev server
