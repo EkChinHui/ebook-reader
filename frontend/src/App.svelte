@@ -4,7 +4,7 @@
   import AudioPlayer from './components/AudioPlayer.svelte'
 </script>
 
-<div class="flex h-screen flex-col bg-zinc-950 text-zinc-100">
+<div class="flex h-screen flex-col bg-parchment-50 text-spine-900">
   <div class="flex flex-1 overflow-hidden">
     <Sidebar />
     <Reader />

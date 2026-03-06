@@ -1,1 +1,121 @@
 @import "tailwindcss";
+
+@theme {
+  --color-parchment-50: #faf8f4;
+  --color-parchment-100: #f5f0e8;
+  --color-parchment-200: #ebe3d4;
+  --color-parchment-300: #ddd2bb;
+  --color-parchment-400: #c9b898;
+
+  --color-spine-700: #4a3f34;
+  --color-spine-800: #3b3128;
+  --color-spine-900: #33291f;
+  --color-spine-950: #281f17;
+
+  --color-amber-accent: #c4841d;
+  --color-amber-glow: #d4973a;
+  --color-amber-warm: #f5d0a0;
+
+  --font-serif: 'Cormorant Garamond', 'Georgia', serif;
+  --font-sans: 'DM Sans', system-ui, sans-serif;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(196, 132, 29, 0.25) transparent;
+}
+
+::selection {
+  background-color: rgba(196, 132, 29, 0.3);
+  color: inherit;
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom range slider */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+  height: 20px;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--color-amber-accent), var(--color-parchment-400));
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--color-amber-glow);
+  margin-top: -5.5px;
+  box-shadow: 0 0 8px rgba(196, 132, 29, 0.4);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+  box-shadow: 0 0 12px rgba(196, 132, 29, 0.6);
+}
+
+input[type="range"]::-moz-range-track {
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--color-amber-accent), var(--color-parchment-400));
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--color-amber-glow);
+  border: none;
+  box-shadow: 0 0 8px rgba(196, 132, 29, 0.4);
+}
+
+/* Fade-in animation for page load */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-fade-up {
+  animation: fadeUp 0.5s ease-out both;
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.4s ease-out both;
+}
+
+/* Invisible range for progress bar overlay */
+input[type="range"].progress-seek {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+}
+input[type="range"].progress-seek::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 0;
+  height: 0;
+}
+input[type="range"].progress-seek::-moz-range-thumb {
+  width: 0;
+  height: 0;
+  border: none;
+}

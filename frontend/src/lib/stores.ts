@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store'
-import type { ChapterInfo } from './api'
+import type { ChapterInfo, TimedSegment } from './api'
 
 export const bookId = writable<string | null>(null)
 export const chapters = writable<ChapterInfo[]>([])
@@ -9,3 +9,5 @@ export const fileName = writable<string>('')
 export const isPlaying = writable<boolean>(false)
 export const selectedVoice = writable<string>('af_heart')
 export const playbackSpeed = writable<number>(1.0)
+export const segments = writable<TimedSegment[]>([])
+export const currentSegmentIndex = writable<number>(-1)
