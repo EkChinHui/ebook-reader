@@ -4,8 +4,9 @@
   import Reader from './components/Reader.svelte'
   import AudioPlayer from './components/AudioPlayer.svelte'
   import { uploadBook, fetchChapter } from './lib/api'
-  import { bookId, chapters, currentChapterIndex, chapterText, fileName, selectedVoice, playbackSpeed } from './lib/stores'
+  import { bookId, chapters, currentChapterIndex, chapterText, fileName, selectedVoice, playbackSpeed, ttsModelStatus } from './lib/stores'
   import { loadBookFile, loadReadingState } from './lib/storage'
+  import { getTTSManagerInstance } from './lib/tts'
 
   onMount(async () => {
     const file = await loadBookFile()
@@ -16,6 +17,11 @@
       $bookId = result.book_id
       $chapters = result.chapters
       $fileName = file.name
+
+      // Start loading TTS model eagerly so it's ready by the time user clicks play
+      const tts = getTTSManagerInstance()
+      tts.setOnStatusChange((status) => { $ttsModelStatus = status })
+      tts.init()
 
       const state = loadReadingState()
       if (state && state.fileName === file.name) {

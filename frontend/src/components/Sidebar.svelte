@@ -1,7 +1,8 @@
 <script lang="ts">
   import { uploadBook, fetchChapter } from '../lib/api'
-  import { bookId, chapters, currentChapterIndex, chapterText, fileName, selectedVoice, playbackSpeed } from '../lib/stores'
+  import { bookId, chapters, currentChapterIndex, chapterText, fileName, selectedVoice, playbackSpeed, ttsModelStatus } from '../lib/stores'
   import { saveBookFile, saveReadingState } from '../lib/storage'
+  import { getTTSManagerInstance } from '../lib/tts'
 
   let uploading = false
   let error = ''
@@ -24,6 +25,10 @@
       $chapters = result.chapters
       $fileName = file.name
       saveBookFile(file)
+      // Start loading TTS model on first book upload
+      const tts = getTTSManagerInstance()
+      tts.setOnStatusChange((status) => { $ttsModelStatus = status })
+      tts.init()
       if (result.chapters.length > 0) {
         await selectChapter(0)
       }
