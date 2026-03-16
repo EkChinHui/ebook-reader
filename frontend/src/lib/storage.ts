@@ -82,8 +82,8 @@ export function loadReadingState(): ReadingState | null {
 
 // --- In-memory audio cache ---
 
-interface CachedAudio {
-  wavChunks: ArrayBuffer[]
+export interface CachedAudio {
+  audioChunks: { audio: Float32Array; sampleRate: number }[]
   segments: TimedSegment[]
 }
 
