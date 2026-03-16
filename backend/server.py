@@ -1,23 +1,17 @@
-import base64
-import json
 import os
 import tempfile
 import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, HTTPException
-from fastapi.responses import StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .book import extract_chapters
-from .tts import VOICES, stream_audio, generate_audio_with_timing, generate_audio_chunks_with_timing
 
 app = FastAPI()
 
 # In-memory book storage keyed by session id
 _books: dict[str, list[tuple[str, str]]] = {}
-# Cached generated audio keyed by audio_id
-_audio_cache: dict[str, bytes] = {}
 
 
 @app.post("/api/upload")
@@ -61,86 +55,6 @@ async def get_chapter(book_id: str, index: int):
 
     name, text = chapters[index]
     return {"title": name, "text": text}
-
-
-@app.get("/api/voices")
-async def get_voices():
-    return {"voices": VOICES}
-
-
-@app.get("/api/narrate/{book_id}/{index}")
-async def narrate_chapter(book_id: str, index: int, voice: str = "af_heart", speed: float = 1.0):
-    chapters = _books.get(book_id)
-    if not chapters:
-        raise HTTPException(404, "Book not found")
-    if index < 0 or index >= len(chapters):
-        raise HTTPException(404, "Chapter not found")
-
-    if voice not in VOICES:
-        raise HTTPException(400, f"Unknown voice: {voice}")
-    if not (0.5 <= speed <= 2.5):
-        raise HTTPException(400, "Speed must be between 0.5 and 2.5")
-
-    _, text = chapters[index]
-    return StreamingResponse(
-        stream_audio(text, voice, speed),
-        media_type="audio/wav",
-    )
-
-
-@app.get("/api/narrate-timed/{book_id}/{index}")
-async def narrate_timed(book_id: str, index: int, voice: str = "af_heart", speed: float = 1.0):
-    chapters = _books.get(book_id)
-    if not chapters:
-        raise HTTPException(404, "Book not found")
-    if index < 0 or index >= len(chapters):
-        raise HTTPException(404, "Chapter not found")
-
-    if voice not in VOICES:
-        raise HTTPException(400, f"Unknown voice: {voice}")
-    if not (0.5 <= speed <= 2.5):
-        raise HTTPException(400, "Speed must be between 0.5 and 2.5")
-
-    _, text = chapters[index]
-    wav_bytes, segments = generate_audio_with_timing(text, voice, speed)
-
-    audio_id = uuid.uuid4().hex[:8]
-    _audio_cache[audio_id] = wav_bytes
-
-    return {"audio_id": audio_id, "segments": segments}
-
-
-@app.get("/api/narrate-stream/{book_id}/{index}")
-async def narrate_stream(book_id: str, index: int, voice: str = "af_heart", speed: float = 1.0):
-    chapters = _books.get(book_id)
-    if not chapters:
-        raise HTTPException(404, "Book not found")
-    if index < 0 or index >= len(chapters):
-        raise HTTPException(404, "Chapter not found")
-
-    if voice not in VOICES:
-        raise HTTPException(400, f"Unknown voice: {voice}")
-    if not (0.5 <= speed <= 2.5):
-        raise HTTPException(400, "Speed must be between 0.5 and 2.5")
-
-    _, text = chapters[index]
-
-    def event_stream():
-        for chunk_index, (wav_bytes, chunk_segments) in enumerate(generate_audio_chunks_with_timing(text, voice, speed)):
-            audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
-            data = json.dumps({"chunk_index": chunk_index, "audio_b64": audio_b64, "segments": chunk_segments})
-            yield f"data: {data}\n\n"
-        yield f"data: {json.dumps({'done': True})}\n\n"
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-
-@app.get("/api/audio/{audio_id}")
-async def get_audio(audio_id: str):
-    wav_bytes = _audio_cache.pop(audio_id, None)
-    if not wav_bytes:
-        raise HTTPException(404, "Audio not found or already consumed")
-    return Response(content=wav_bytes, media_type="audio/wav")
 
 
 # Serve frontend static files in production
