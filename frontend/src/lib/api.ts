@@ -13,6 +13,12 @@ export interface ChapterContent {
   text: string
 }
 
+export interface TimedSegment {
+  text: string
+  start: number
+  end: number
+}
+
 export async function uploadBook(file: File): Promise<UploadResult> {
   const form = new FormData()
   form.append('file', file)
@@ -28,35 +34,4 @@ export async function fetchChapter(bookId: string, index: number): Promise<Chapt
   const res = await fetch(`/api/books/${bookId}/chapters/${index}`)
   if (!res.ok) throw new Error('Failed to load chapter')
   return res.json()
-}
-
-export async function fetchVoices(): Promise<string[]> {
-  const res = await fetch('/api/voices')
-  const data = await res.json()
-  return data.voices
-}
-
-export function narrateUrl(bookId: string, index: number, voice: string, speed: number): string {
-  return `/api/narrate/${bookId}/${index}?voice=${encodeURIComponent(voice)}&speed=${speed}`
-}
-
-export interface TimedSegment {
-  text: string
-  start: number
-  end: number
-}
-
-export interface TimedNarrationResult {
-  audio_id: string
-  segments: TimedSegment[]
-}
-
-export async function narrateTimed(bookId: string, index: number, voice: string, speed: number): Promise<TimedNarrationResult> {
-  const res = await fetch(`/api/narrate-timed/${bookId}/${index}?voice=${encodeURIComponent(voice)}&speed=${speed}`)
-  if (!res.ok) throw new Error('Failed to generate narration')
-  return res.json()
-}
-
-export function audioUrl(audioId: string): string {
-  return `/api/audio/${audioId}`
 }
