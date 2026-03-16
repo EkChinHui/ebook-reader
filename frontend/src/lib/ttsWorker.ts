@@ -42,7 +42,7 @@ self.onmessage = async (e: MessageEvent) => {
         const sampleRate = audio.sampling_rate
         self.postMessage(
           { type: 'chunk', generationId, text: chunkText, audio: samples, sampleRate },
-          [samples.buffer]  // Transfer ownership for zero-copy
+          { transfer: [samples.buffer] }  // Transfer ownership for zero-copy
         )
       }
 
