@@ -1,7 +1,10 @@
 <script lang="ts">
-  import { bookId, currentChapterIndex, chapters, chapterText, isPlaying, selectedVoice, playbackSpeed, segments, currentSegmentIndex, fileName } from '../lib/stores'
+  import { bookId, currentChapterIndex, chapters, chapterText, isPlaying, selectedVoice, playbackSpeed, segments, currentSegmentIndex, fileName, ttsModelStatus } from '../lib/stores'
   import { fetchChapter } from '../lib/api'
   import { getCachedAudio, setCachedAudio, saveReadingState } from '../lib/storage'
+  import { getTTSManagerInstance } from '../lib/tts'
+  import type { TTSChunk } from '../lib/tts'
+  import type { TimedSegment } from '../lib/api'
 
   const VOICES = [
     { id: 'af_heart', label: 'Heart' },
@@ -30,11 +33,12 @@
   let playbackStartCtxTime = 0
   let playbackStartOffset = 0
   let animFrameId: number | null = null
-  let abortController: AbortController | null = null
   let streamingDone = false
   let playGeneration = 0
-  let cachedWavChunks: ArrayBuffer[] = []
   let lastSaveTime = 0
+
+  // Client-side TTS
+  let cachedAudioChunks: { audio: Float32Array; sampleRate: number }[] = []
 
   function ensureAudioCtx(): AudioContext {
     if (!audioCtx) {
@@ -110,6 +114,7 @@
     const offsetInChunk = Math.max(0, curTime - chunk.startTime)
     const source = ctx.createBufferSource()
     source.buffer = chunk.buffer
+    source.playbackRate.value = $playbackSpeed
     source.connect(gainNode!)
 
     const realTimeDelay = chunk.startTime + offsetInChunk - curTime
@@ -140,12 +145,18 @@
     }
   }
 
-  async function playFromCache(cached: { wavChunks: ArrayBuffer[]; segments: import('../lib/api').TimedSegment[] }) {
+  function float32ToAudioBuffer(ctx: AudioContext, samples: Float32Array, sampleRate: number): AudioBuffer {
+    const audioBuffer = ctx.createBuffer(1, samples.length, sampleRate)
+    audioBuffer.getChannelData(0).set(samples)
+    return audioBuffer
+  }
+
+  function playFromCache(cached: { audioChunks: { audio: Float32Array; sampleRate: number }[]; segments: TimedSegment[] }) {
     loading = true
     const gen = ++playGeneration
 
     const ctx = ensureAudioCtx()
-    if (ctx.state === 'suspended') await ctx.resume()
+    if (ctx.state === 'suspended') ctx.resume()
 
     decodedChunks = []
     totalAudioDuration = 0
@@ -153,11 +164,11 @@
     $currentSegmentIndex = -1
     currentTime = 0
     duration = 0
-    cachedWavChunks = []
+    cachedAudioChunks = []
 
-    for (const wavBuf of cached.wavChunks) {
+    for (const chunk of cached.audioChunks) {
       if (gen !== playGeneration) return
-      const audioBuffer = await ctx.decodeAudioData(wavBuf.slice(0))
+      const audioBuffer = float32ToAudioBuffer(ctx, chunk.audio, chunk.sampleRate)
       const chunkStart = totalAudioDuration
       decodedChunks = [...decodedChunks, { buffer: audioBuffer, startTime: chunkStart }]
       totalAudioDuration += audioBuffer.duration
@@ -177,13 +188,19 @@
     startTimeTracking()
   }
 
-  async function play() {
+  function play() {
     if (!$bookId || $currentChapterIndex < 0 || loading) return
 
     // Check audio cache first
     const cached = getCachedAudio($bookId, $currentChapterIndex, $selectedVoice, $playbackSpeed)
     if (cached) {
-      await playFromCache(cached)
+      playFromCache(cached)
+      return
+    }
+
+    // Ensure TTS model is loaded
+    const manager = getTTSManagerInstance()
+    if (manager.getStatus() !== 'ready') {
       return
     }
 
@@ -192,7 +209,7 @@
     const gen = ++playGeneration
 
     const ctx = ensureAudioCtx()
-    if (ctx.state === 'suspended') await ctx.resume()
+    if (ctx.state === 'suspended') ctx.resume()
 
     decodedChunks = []
     totalAudioDuration = 0
@@ -200,91 +217,69 @@
     $currentSegmentIndex = -1
     currentTime = 0
     duration = 0
-    cachedWavChunks = []
+    cachedAudioChunks = []
 
-    abortController = new AbortController()
-    const url = `/api/narrate-stream/${$bookId}/${$currentChapterIndex}?voice=${encodeURIComponent($selectedVoice)}&speed=${$playbackSpeed}`
+    const allSegments: TimedSegment[] = []
 
-    try {
-      const response = await fetch(url, { signal: abortController.signal })
-      if (!response.ok) throw new Error('Failed to start narration')
+    manager.setOnChunk((chunk: TTSChunk) => {
+      if (gen !== playGeneration) return
 
-      const reader = response.body!.getReader()
-      const decoder = new TextDecoder()
-      let textBuffer = ''
+      const audioBuffer = float32ToAudioBuffer(ctx, chunk.audio, chunk.sampleRate)
+      const chunkStart = totalAudioDuration
 
-      playbackStartCtxTime = ctx.currentTime
-      playbackStartOffset = 0
-      $isPlaying = true
-      if (gen === playGeneration) loading = false
-      startTimeTracking()
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        if (gen !== playGeneration) break
-
-        textBuffer += decoder.decode(value, { stream: true })
-        const lines = textBuffer.split('\n')
-        textBuffer = lines.pop() || ''
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          const data = JSON.parse(line.slice(6))
-          if (data.done) continue
-
-          // Decode base64 audio chunk
-          const binaryStr = atob(data.audio_b64)
-          const bytes = new Uint8Array(binaryStr.length)
-          for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i)
-
-          // Copy WAV bytes for cache before decodeAudioData detaches the buffer
-          const wavCopy = bytes.buffer.slice(0)
-          const audioBuffer = await ctx.decodeAudioData(bytes.buffer)
-
-          if (gen !== playGeneration) break
-
-          cachedWavChunks.push(wavCopy)
-
-          const chunkStart = totalAudioDuration
-          decodedChunks = [...decodedChunks, { buffer: audioBuffer, startTime: chunkStart }]
-          totalAudioDuration += audioBuffer.duration
-          duration = totalAudioDuration
-
-          $segments = [...$segments, ...data.segments]
-
-          if ($isPlaying) {
-            scheduleOneChunk(decodedChunks.length - 1)
-          }
-        }
+      const segment: TimedSegment = {
+        text: chunk.text,
+        start: chunkStart,
+        end: chunkStart + audioBuffer.duration,
       }
+      allSegments.push(segment)
+      $segments = [...allSegments]
 
-      if (gen === playGeneration) {
-        streamingDone = true
-        // Save to audio cache
-        if ($bookId && cachedWavChunks.length > 0) {
-          setCachedAudio($bookId, $currentChapterIndex, $selectedVoice, $playbackSpeed, {
-            wavChunks: cachedWavChunks,
-            segments: $segments,
-          })
-        }
-      }
-    } catch (e: any) {
-      if (e.name !== 'AbortError') {
-        console.error('Narration failed:', e)
-      }
-    } finally {
-      if (gen === playGeneration) {
+      cachedAudioChunks.push({ audio: chunk.audio, sampleRate: chunk.sampleRate })
+
+      decodedChunks = [...decodedChunks, { buffer: audioBuffer, startTime: chunkStart }]
+      totalAudioDuration += audioBuffer.duration
+      duration = totalAudioDuration
+
+      if (loading) {
         loading = false
-        streamingDone = true
+        playbackStartCtxTime = ctx.currentTime
+        playbackStartOffset = 0
+        $isPlaying = true
+        startTimeTracking()
       }
-    }
+
+      if ($isPlaying) {
+        scheduleOneChunk(decodedChunks.length - 1)
+      }
+    })
+
+    manager.setOnDone(() => {
+      if (gen !== playGeneration) return
+      streamingDone = true
+      loading = false
+
+      if ($bookId && cachedAudioChunks.length > 0) {
+        setCachedAudio($bookId, $currentChapterIndex, $selectedVoice, $playbackSpeed, {
+          audioChunks: cachedAudioChunks,
+          segments: [...allSegments],
+        })
+      }
+    })
+
+    manager.setOnError((error: string) => {
+      if (gen !== playGeneration) return
+      console.error('TTS generation failed:', error)
+      loading = false
+      streamingDone = true
+    })
+
+    manager.generate($chapterText, $selectedVoice)
   }
 
   function stop() {
     persistPosition()
-    abortController?.abort()
-    abortController = null
+    getTTSManagerInstance().cancel()
     stopAllSources()
     stopTimeTracking()
     $isPlaying = false
@@ -295,7 +290,7 @@
     decodedChunks = []
     totalAudioDuration = 0
     streamingDone = false
-    cachedWavChunks = []
+    cachedAudioChunks = []
   }
 
   function togglePlayPause() {
@@ -362,7 +357,7 @@
     return `${m}:${sec.toString().padStart(2, '0')}`
   }
 
-  $: canPlay = $bookId && $currentChapterIndex >= 0 && !loading
+  $: canPlay = $bookId && $currentChapterIndex >= 0 && !loading && $ttsModelStatus === 'ready'
   $: hasPrev = $currentChapterIndex > 0
   $: hasNext = $currentChapterIndex < $chapters.length - 1
   $: hasAudio = decodedChunks.length > 0
@@ -390,6 +385,14 @@
         class="progress-seek absolute inset-0 w-full h-full opacity-0 cursor-pointer"
       />
     </div>
+  {/if}
+
+  {#if $ttsModelStatus === 'loading'}
+    <div class="text-xs text-amber-accent/70 text-center py-1">Loading TTS model...</div>
+  {:else if $ttsModelStatus === 'error'}
+    <div class="text-xs text-red-400/70 text-center py-1">TTS model failed to load</div>
+  {:else if $ttsModelStatus === 'idle'}
+    <div class="text-xs text-parchment-400/40 text-center py-1">TTS model not loaded</div>
   {/if}
 
   <div class="mx-auto flex max-w-4xl items-center gap-2 px-6 py-3">
