@@ -3,8 +3,8 @@
   import Sidebar from './components/Sidebar.svelte'
   import Reader from './components/Reader.svelte'
   import AudioPlayer from './components/AudioPlayer.svelte'
-  import { uploadBook, fetchChapter } from './lib/api'
-  import { bookId, chapters, currentChapterIndex, chapterText, fileName, selectedVoice, playbackSpeed, ttsModelStatus } from './lib/stores'
+  import { parseBook } from './lib/book'
+  import { parsedChapters, currentChapterIndex, chapterText, fileName, selectedVoice, playbackSpeed, ttsModelStatus } from './lib/stores'
   import { loadBookFile, loadReadingState } from './lib/storage'
   import { getTTSManagerInstance } from './lib/tts'
 
@@ -13,12 +13,11 @@
     if (!file) return
 
     try {
-      const result = await uploadBook(file)
-      $bookId = result.book_id
-      $chapters = result.chapters
+      const chapters = await parseBook(file)
+      $parsedChapters = chapters
       $fileName = file.name
 
-      // Start loading TTS model eagerly so it's ready by the time user clicks play
+      // Start loading TTS model eagerly
       const tts = getTTSManagerInstance()
       tts.setOnStatusChange((status) => { $ttsModelStatus = status })
       tts.init()
@@ -28,14 +27,12 @@
         $selectedVoice = state.voice
         $playbackSpeed = state.speed
 
-        const idx = Math.min(state.chapterIndex, result.chapters.length - 1)
+        const idx = Math.min(state.chapterIndex, chapters.length - 1)
         $currentChapterIndex = idx
-        const content = await fetchChapter(result.book_id, idx)
-        $chapterText = content.text
-      } else if (result.chapters.length > 0) {
+        $chapterText = chapters[idx].text
+      } else if (chapters.length > 0) {
         $currentChapterIndex = 0
-        const content = await fetchChapter(result.book_id, 0)
-        $chapterText = content.text
+        $chapterText = chapters[0].text
       }
     } catch (e) {
       console.error('Failed to restore book:', e)

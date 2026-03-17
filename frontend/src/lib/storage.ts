@@ -1,4 +1,4 @@
-import type { TimedSegment } from './api'
+import type { TimedSegment } from './stores'
 
 // --- IndexedDB: book file persistence ---
 
@@ -89,14 +89,14 @@ export interface CachedAudio {
 
 const audioCache = new Map<string, CachedAudio>()
 
-function audioCacheKey(bookId: string, chapter: number, voice: string, speed: number): string {
-  return `${bookId}:${chapter}:${voice}:${speed}`
+function audioCacheKey(fileName: string, chapter: number, voice: string, speed: number): string {
+  return `${fileName}:${chapter}:${voice}:${speed}`
 }
 
-export function getCachedAudio(bookId: string, chapter: number, voice: string, speed: number): CachedAudio | null {
-  return audioCache.get(audioCacheKey(bookId, chapter, voice, speed)) ?? null
+export function getCachedAudio(fileName: string, chapter: number, voice: string, speed: number): CachedAudio | null {
+  return audioCache.get(audioCacheKey(fileName, chapter, voice, speed)) ?? null
 }
 
-export function setCachedAudio(bookId: string, chapter: number, voice: string, speed: number, data: CachedAudio): void {
-  audioCache.set(audioCacheKey(bookId, chapter, voice, speed), data)
+export function setCachedAudio(fileName: string, chapter: number, voice: string, speed: number, data: CachedAudio): void {
+  audioCache.set(audioCacheKey(fileName, chapter, voice, speed), data)
 }

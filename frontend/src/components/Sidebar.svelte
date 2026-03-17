@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { uploadBook, fetchChapter } from '../lib/api'
-  import { bookId, chapters, currentChapterIndex, chapterText, fileName, selectedVoice, playbackSpeed, ttsModelStatus } from '../lib/stores'
+  import { parseBook } from '../lib/book'
+  import { parsedChapters, currentChapterIndex, chapterText, fileName, selectedVoice, playbackSpeed, ttsModelStatus } from '../lib/stores'
   import { saveBookFile, saveReadingState } from '../lib/storage'
   import { getTTSManagerInstance } from '../lib/tts'
 
@@ -20,30 +20,30 @@
     error = ''
     uploading = true
     try {
-      const result = await uploadBook(file)
-      $bookId = result.book_id
-      $chapters = result.chapters
+      const chapters = await parseBook(file)
+      $parsedChapters = chapters
       $fileName = file.name
       saveBookFile(file)
+
       // Start loading TTS model on first book upload
       const tts = getTTSManagerInstance()
       tts.setOnStatusChange((status) => { $ttsModelStatus = status })
       tts.init()
-      if (result.chapters.length > 0) {
-        await selectChapter(0)
+
+      if (chapters.length > 0) {
+        selectChapter(0)
       }
     } catch (err: any) {
-      error = err.message || 'Upload failed'
+      error = err.message || 'Failed to parse book'
     } finally {
       uploading = false
     }
   }
 
-  async function selectChapter(index: number) {
-    if (!$bookId) return
+  function selectChapter(index: number) {
+    if ($parsedChapters.length === 0) return
     $currentChapterIndex = index
-    const content = await fetchChapter($bookId, index)
-    $chapterText = content.text
+    $chapterText = $parsedChapters[index].text
     saveReadingState({ fileName: $fileName, chapterIndex: index, currentTime: 0, voice: $selectedVoice, speed: $playbackSpeed })
   }
 </script>
@@ -93,23 +93,23 @@
 
   <!-- Chapter list -->
   <nav class="relative z-10 flex-1 overflow-y-auto py-2">
-    {#if $chapters.length === 0}
+    {#if $parsedChapters.length === 0}
       <div class="px-5 py-8 text-center">
         <p class="font-serif text-sm italic text-parchment-400/30">Chapters will appear here</p>
       </div>
     {/if}
-    {#each $chapters as chapter, i (chapter.index)}
-      {@const active = $currentChapterIndex === chapter.index}
+    {#each $parsedChapters as chapter, i (i)}
+      {@const active = $currentChapterIndex === i}
       <button
         class="group/ch relative w-full text-left px-5 py-3 text-sm transition-all duration-200 {active ? 'text-amber-warm' : 'text-parchment-400/60'}"
-        onclick={() => selectChapter(chapter.index)}
+        onclick={() => selectChapter(i)}
         style={`animation-delay: ${i * 30}ms`}
       >
         {#if active}
           <div class="absolute left-0 top-1/2 -translate-y-1/2 h-6 w-0.5 rounded-r bg-amber-accent"></div>
         {/if}
         <span class="inline-block transition-transform duration-200 group-hover/ch:translate-x-1" class:translate-x-1={active}>
-          <span class="mr-2 font-serif text-xs tabular-nums {active ? 'text-amber-accent' : 'text-parchment-400/30'}">{chapter.index + 1}</span>
+          <span class="mr-2 font-serif text-xs tabular-nums {active ? 'text-amber-accent' : 'text-parchment-400/30'}">{i + 1}</span>
           <span class="group-hover/ch:text-parchment-200 transition-colors" class:font-medium={active}>{chapter.title}</span>
         </span>
       </button>

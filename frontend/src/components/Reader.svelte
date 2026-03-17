@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { chapterText, chapters, currentChapterIndex, segments, currentSegmentIndex, isPlaying } from '../lib/stores'
+  import { chapterText, parsedChapters, currentChapterIndex, segments, currentSegmentIndex, isPlaying } from '../lib/stores'
   import { tick } from 'svelte'
-  import type { TimedSegment } from '../lib/api'
+  import type { TimedSegment } from '../lib/stores'
 
   let currentTitle: string
-  $: currentTitle = $chapters.find(c => c.index === $currentChapterIndex)?.title ?? ''
+  $: currentTitle = $parsedChapters[$currentChapterIndex]?.title ?? ''
 
   $: hasSegments = $segments.length > 0 && $isPlaying
 

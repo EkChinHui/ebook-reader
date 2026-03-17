@@ -1,9 +1,15 @@
 import { writable } from 'svelte/store'
-import type { ChapterInfo, TimedSegment } from './api'
+import type { Chapter } from './book'
 import type { TTSModelStatus } from './tts'
 
-export const bookId = writable<string | null>(null)
-export const chapters = writable<ChapterInfo[]>([])
+export interface TimedSegment {
+  text: string
+  start: number
+  end: number
+}
+
+/** All parsed chapters (title + full text) held in memory */
+export const parsedChapters = writable<Chapter[]>([])
 export const currentChapterIndex = writable<number>(-1)
 export const chapterText = writable<string>('')
 export const fileName = writable<string>('')

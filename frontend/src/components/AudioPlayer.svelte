@@ -1,10 +1,9 @@
 <script lang="ts">
-  import { bookId, currentChapterIndex, chapters, chapterText, isPlaying, selectedVoice, playbackSpeed, segments, currentSegmentIndex, fileName, ttsModelStatus } from '../lib/stores'
-  import { fetchChapter } from '../lib/api'
+  import { parsedChapters, currentChapterIndex, chapterText, isPlaying, selectedVoice, playbackSpeed, segments, currentSegmentIndex, fileName, ttsModelStatus } from '../lib/stores'
+  import type { TimedSegment } from '../lib/stores'
   import { getCachedAudio, setCachedAudio, saveReadingState } from '../lib/storage'
   import { getTTSManagerInstance } from '../lib/tts'
   import type { TTSChunk } from '../lib/tts'
-  import type { TimedSegment } from '../lib/api'
 
   const VOICES = [
     { id: 'af_heart', label: 'Heart' },
@@ -64,7 +63,7 @@
   }
 
   function persistPosition() {
-    if ($bookId) {
+    if ($fileName) {
       saveReadingState({
         fileName: $fileName,
         chapterIndex: $currentChapterIndex,
@@ -189,10 +188,10 @@
   }
 
   function play() {
-    if (!$bookId || $currentChapterIndex < 0 || loading) return
+    if (!$fileName || $currentChapterIndex < 0 || loading) return
 
     // Check audio cache first
-    const cached = getCachedAudio($bookId, $currentChapterIndex, $selectedVoice, $playbackSpeed)
+    const cached = getCachedAudio($fileName, $currentChapterIndex, $selectedVoice, $playbackSpeed)
     if (cached) {
       playFromCache(cached)
       return
@@ -259,8 +258,8 @@
       streamingDone = true
       loading = false
 
-      if ($bookId && cachedAudioChunks.length > 0) {
-        setCachedAudio($bookId, $currentChapterIndex, $selectedVoice, $playbackSpeed, {
+      if ($fileName && cachedAudioChunks.length > 0) {
+        setCachedAudio($fileName, $currentChapterIndex, $selectedVoice, $playbackSpeed, {
           audioChunks: cachedAudioChunks,
           segments: [...allSegments],
         })
@@ -328,17 +327,16 @@
     }
   }
 
-  async function changeChapter(delta: number) {
-    if (!$bookId) return
+  function changeChapter(delta: number) {
+    if (!$fileName) return
     const newIndex = $currentChapterIndex + delta
-    if (newIndex < 0 || newIndex >= $chapters.length) return
+    if (newIndex < 0 || newIndex >= $parsedChapters.length) return
 
     const wasPlaying = $isPlaying
     stop()
 
     $currentChapterIndex = newIndex
-    const content = await fetchChapter($bookId, newIndex)
-    $chapterText = content.text
+    $chapterText = $parsedChapters[newIndex].text
 
     if (wasPlaying) play()
   }
@@ -357,9 +355,9 @@
     return `${m}:${sec.toString().padStart(2, '0')}`
   }
 
-  $: canPlay = $bookId && $currentChapterIndex >= 0 && !loading && $ttsModelStatus === 'ready'
+  $: canPlay = $fileName && $currentChapterIndex >= 0 && !loading && $ttsModelStatus === 'ready'
   $: hasPrev = $currentChapterIndex > 0
-  $: hasNext = $currentChapterIndex < $chapters.length - 1
+  $: hasNext = $currentChapterIndex < $parsedChapters.length - 1
   $: hasAudio = decodedChunks.length > 0
   $: progress = duration > 0 ? (currentTime / duration) * 100 : 0
 </script>
