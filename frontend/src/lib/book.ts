@@ -91,8 +91,8 @@ async function parseEpub(arrayBuffer: ArrayBuffer): Promise<Chapter[]> {
       const section = book.spine.get(fileName)
       if (!section) continue
 
-      const contents = await section.load(book.load.bind(book))
-      const html = contents.innerHTML || contents.outerHTML || ''
+      const contents = await section.load(book.load.bind(book)) as any
+      const html: string = contents?.documentElement?.outerHTML || contents?.body?.innerHTML || contents?.innerHTML || contents?.outerHTML || ''
       const text = extractTextFromHtml(html)
 
       if (text.length > 50) {
