@@ -7,6 +7,20 @@ const MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX'
 self.onmessage = async (e: MessageEvent) => {
   const msg = e.data
 
+  if (msg.type === 'check') {
+    try {
+      tts = await KokoroTTS.from_pretrained(MODEL_ID, {
+        dtype: 'q8',
+        device: 'wasm',
+        local_files_only: true,
+      } as any)
+      self.postMessage({ type: 'status', status: 'ready' })
+    } catch {
+      self.postMessage({ type: 'status', status: 'idle' })
+    }
+    return
+  }
+
   if (msg.type === 'init') {
     try {
       self.postMessage({ type: 'status', status: 'loading' })

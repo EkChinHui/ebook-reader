@@ -26,13 +26,25 @@ export class TTSManager {
   setOnError(cb: ErrorCallback) { this.onError = cb }
   getStatus(): TTSModelStatus { return this.status }
 
-  init() {
+  checkCached() {
     if (this.worker) return
     this.worker = new Worker(
       new URL('./ttsWorker.ts', import.meta.url),
       { type: 'module' }
     )
     this.worker.onmessage = (e: MessageEvent) => this.handleMessage(e.data)
+    this.worker.postMessage({ type: 'check' })
+  }
+
+  init() {
+    if (this.status === 'ready') return
+    if (!this.worker) {
+      this.worker = new Worker(
+        new URL('./ttsWorker.ts', import.meta.url),
+        { type: 'module' }
+      )
+      this.worker.onmessage = (e: MessageEvent) => this.handleMessage(e.data)
+    }
     this.worker.postMessage({ type: 'init' })
   }
 
