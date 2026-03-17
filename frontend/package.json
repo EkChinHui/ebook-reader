@@ -21,6 +21,8 @@
     "vite": "^7.3.1"
   },
   "dependencies": {
-    "kokoro-js": "^1.2.1"
+    "epubjs": "^0.3.93",
+    "kokoro-js": "^1.2.1",
+    "pdfjs-dist": "^5.5.207"
   }
 }
