@@ -15,16 +15,28 @@
   let error = $state('')
   let dragOver = $state(false)
 
+  let downloadProgress = $state(0)
+  let downloadTotal = $state(0)
+  let downloadLoaded = $state(0)
+
   const tts = getTTSManagerInstance()
 
   onMount(() => {
     tts.setOnStatusChange((status) => { $ttsModelStatus = status })
-    tts.checkCached()
   })
 
   function handleDownload() {
     if ($ttsModelStatus === 'loading' || $ttsModelStatus === 'ready') return
+    tts.setOnProgress((p) => {
+      downloadProgress = p.progress
+      downloadLoaded = p.loaded
+      downloadTotal = p.total
+    })
     tts.init()
+  }
+
+  async function handleDeleteModel() {
+    await tts.deleteCache()
   }
 
   let modelReady = $derived($ttsModelStatus === 'ready')
@@ -126,18 +138,42 @@
           Voice Model Ready
         </span>
       {:else if modelLoading}
-        <span class="flex items-center justify-center gap-2">
-          <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25"></circle>
-            <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" class="opacity-75"></path>
-          </svg>
-          Downloading Model...
-        </span>
+        {#if downloadTotal > 0}
+          <div class="w-full">
+            <div class="mb-2 flex items-center justify-between text-xs">
+              <span>Downloading Model...</span>
+              <span>{Math.round(downloadProgress)}%</span>
+            </div>
+            <div class="h-1.5 w-full overflow-hidden rounded-full bg-spine-900/30">
+              <div
+                class="h-full rounded-full bg-amber-glow transition-all duration-300 ease-out"
+                style="width: {downloadProgress}%"
+              ></div>
+            </div>
+            <p class="mt-1.5 text-[10px] text-parchment-400/35">
+              {(downloadLoaded / 1024 / 1024).toFixed(0)} / {(downloadTotal / 1024 / 1024).toFixed(0)} MB
+            </p>
+          </div>
+        {:else}
+          <span class="flex items-center justify-center gap-2">
+            <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25"></circle>
+              <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" class="opacity-75"></path>
+            </svg>
+            Loading Model...
+          </span>
+        {/if}
       {:else}
         Download TTS Voice Model
       {/if}
     </button>
-    <p class="mb-6 text-center text-xs text-parchment-400/35">~165 MB — cached after first download</p>
+    <p class="mb-6 text-center text-xs text-parchment-400/35">
+      ~165 MB — cached after first download
+      {#if modelReady}
+        <span class="mx-1">·</span>
+        <button type="button" class="underline hover:text-parchment-400/60 transition-colors" onclick={handleDeleteModel}>delete model</button>
+      {/if}
+    </p>
 
     <!-- Drop zone -->
     <input bind:this={fileInput} type="file" accept=".epub,.pdf" class="hidden" onchange={handleFileInput} disabled={!modelReady || uploading} />

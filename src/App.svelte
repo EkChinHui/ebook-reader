@@ -9,7 +9,7 @@
   import { loadBookFile, loadReadingState } from './lib/storage'
   import { getTTSManagerInstance } from './lib/tts'
 
-  let view = $state<'loading' | 'landing' | 'reader'>('loading')
+  let view = $state<'landing' | 'reader'>('landing')
 
   function goToReader() {
     view = 'reader'
@@ -17,26 +17,18 @@
 
   onMount(async () => {
     const tts = getTTSManagerInstance()
+    tts.setOnStatusChange((status) => { $ttsModelStatus = status })
 
-    const cachedStatus = await new Promise<string>((resolve) => {
-      tts.setOnStatusChange((status) => {
-        $ttsModelStatus = status
-        if (status === 'ready' || status === 'idle') resolve(status)
-      })
-      tts.checkCached()
-    })
+    const isCached = await tts.checkCached()
 
-    if (cachedStatus !== 'ready') {
-      view = 'landing'
-      return
-    }
+    if (!isCached) return
 
-    // Model is cached — try to restore saved book
+    // Model is cached — start loading it in the background
+    tts.init()
+
+    // Try to restore saved book
     const file = await loadBookFile()
-    if (!file) {
-      view = 'landing'
-      return
-    }
+    if (!file) return
 
     try {
       const chapters = await parseBook(file)
@@ -58,22 +50,11 @@
       view = 'reader'
     } catch (e) {
       console.error('Failed to restore book:', e)
-      view = 'landing'
     }
   })
 </script>
 
-{#if view === 'loading'}
-  <div class="flex h-screen items-center justify-center bg-spine-900">
-    <div class="text-center animate-fade-in">
-      <svg class="mx-auto mb-3 h-8 w-8 text-amber-glow/60 animate-spin" viewBox="0 0 24 24" fill="none">
-        <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25"></circle>
-        <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" class="opacity-75"></path>
-      </svg>
-      <p class="text-sm text-parchment-400/40">Loading...</p>
-    </div>
-  </div>
-{:else if view === 'landing'}
+{#if view === 'landing'}
   <LandingPage onBookLoaded={goToReader} />
 {:else}
   <div class="flex h-screen flex-col bg-parchment-50 text-spine-900">

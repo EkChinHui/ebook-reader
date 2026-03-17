@@ -6,7 +6,14 @@ export interface TTSChunk {
   sampleRate: number
 }
 
+export interface TTSDownloadProgress {
+  progress: number
+  loaded: number
+  total: number
+}
+
 type StatusCallback = (status: TTSModelStatus, error?: string) => void
+type ProgressCallback = (progress: TTSDownloadProgress) => void
 type ChunkCallback = (chunk: TTSChunk) => void
 type DoneCallback = () => void
 type ErrorCallback = (error: string) => void
@@ -16,24 +23,38 @@ export class TTSManager {
   private status: TTSModelStatus = 'idle'
   private currentGenerationId = 0
   private onStatusChange: StatusCallback | null = null
+  private onProgress: ProgressCallback | null = null
   private onChunk: ChunkCallback | null = null
   private onDone: DoneCallback | null = null
   private onError: ErrorCallback | null = null
 
   setOnStatusChange(cb: StatusCallback) { this.onStatusChange = cb }
+  setOnProgress(cb: ProgressCallback) { this.onProgress = cb }
   setOnChunk(cb: ChunkCallback) { this.onChunk = cb }
   setOnDone(cb: DoneCallback) { this.onDone = cb }
   setOnError(cb: ErrorCallback) { this.onError = cb }
   getStatus(): TTSModelStatus { return this.status }
 
-  checkCached() {
-    if (this.worker) return
-    this.worker = new Worker(
-      new URL('./ttsWorker.ts', import.meta.url),
-      { type: 'module' }
-    )
-    this.worker.onmessage = (e: MessageEvent) => this.handleMessage(e.data)
-    this.worker.postMessage({ type: 'check' })
+  checkCached(): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (!this.worker) {
+        this.worker = new Worker(
+          new URL('./ttsWorker.ts', import.meta.url),
+          { type: 'module' }
+        )
+        this.worker.onmessage = (e: MessageEvent) => this.handleMessage(e.data)
+      }
+      const prev = this.worker.onmessage
+      this.worker.onmessage = (e: MessageEvent) => {
+        if (e.data.type === 'check-result') {
+          this.worker!.onmessage = (ev: MessageEvent) => this.handleMessage(ev.data)
+          resolve(e.data.cached)
+        } else {
+          this.handleMessage(e.data)
+        }
+      }
+      this.worker.postMessage({ type: 'check' })
+    })
   }
 
   init() {
@@ -52,6 +73,11 @@ export class TTSManager {
     if (msg.type === 'status') {
       this.status = msg.status
       this.onStatusChange?.(msg.status, msg.error)
+      return
+    }
+
+    if (msg.type === 'progress') {
+      this.onProgress?.({ progress: msg.progress, loaded: msg.loaded, total: msg.total })
       return
     }
 
@@ -80,6 +106,15 @@ export class TTSManager {
 
   cancel() {
     this.currentGenerationId++
+  }
+
+  async deleteCache() {
+    this.cancel()
+    this.worker?.terminate()
+    this.worker = null
+    this.status = 'idle'
+    this.onStatusChange?.('idle')
+    await caches.delete('transformers-cache')
   }
 
   destroy() {

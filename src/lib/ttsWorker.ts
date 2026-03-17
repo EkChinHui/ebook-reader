@@ -9,14 +9,12 @@ self.onmessage = async (e: MessageEvent) => {
 
   if (msg.type === 'check') {
     try {
-      tts = await KokoroTTS.from_pretrained(MODEL_ID, {
-        dtype: 'q8',
-        device: 'wasm',
-        local_files_only: true,
-      } as any)
-      self.postMessage({ type: 'status', status: 'ready' })
+      const cache = await caches.open('transformers-cache')
+      const keys = await cache.keys()
+      const cached = keys.some(r => r.url.includes(MODEL_ID))
+      self.postMessage({ type: 'check-result', cached })
     } catch {
-      self.postMessage({ type: 'status', status: 'idle' })
+      self.postMessage({ type: 'check-result', cached: false })
     }
     return
   }
@@ -27,6 +25,23 @@ self.onmessage = async (e: MessageEvent) => {
       tts = await KokoroTTS.from_pretrained(MODEL_ID, {
         dtype: 'q8',
         device: 'wasm',
+        progress_callback: (() => {
+          const files = new Map<string, { loaded: number; total: number }>()
+          return (p: any) => {
+            if (p.status === 'initiate') {
+              files.set(p.file, { loaded: 0, total: 0 })
+            } else if (p.status === 'progress') {
+              files.set(p.file, { loaded: p.loaded, total: p.total })
+              let totalLoaded = 0, totalSize = 0
+              for (const f of files.values()) {
+                totalLoaded += f.loaded
+                totalSize += f.total
+              }
+              const progress = totalSize > 0 ? (totalLoaded / totalSize) * 100 : 0
+              self.postMessage({ type: 'progress', progress, loaded: totalLoaded, total: totalSize })
+            }
+          }
+        })(),
       })
       self.postMessage({ type: 'status', status: 'ready' })
     } catch (err: any) {
