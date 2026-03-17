@@ -1,72 +1,53 @@
 # Ebook Reader
 
-A web-based ebook reader with text-to-speech narration powered by [Kokoro TTS](https://github.com/hexgrad/kokoro). Upload EPUB or PDF files, read chapters in a clean interface, and listen to them read aloud with word-level highlighting.
+A fully client-side ebook reader with text-to-speech narration powered by [kokoro-js](https://github.com/hexgrad/kokoro). Upload EPUB or PDF files, read chapters in a clean interface, and listen to them read aloud with sentence-level highlighting. Everything runs in your browser — no server required.
 
 ## Features
 
 - **EPUB & PDF support** — Upload and read both formats with automatic chapter/page extraction
-- **TTS narration** — Natural-sounding text-to-speech with 11 voice options
-- **Word-level highlighting** — Synchronized text highlighting follows along as audio plays
-- **Adjustable playback** — Control voice selection and speed (0.5x–2.5x)
-- **Streaming audio** — Audio streams as it generates, no waiting for full synthesis
+- **TTS narration** — Natural-sounding text-to-speech with 11 voice options, powered by Kokoro 82M running locally in a Web Worker
+- **Sentence-level highlighting** — Synchronized text highlighting follows along as audio plays
+- **Adjustable playback** — Control voice selection and speed (0.75x–2.0x)
+- **Streaming audio** — Audio plays sentence-by-sentence as it generates, no waiting for full synthesis
+- **Offline-capable** — After first model download (~165 MB), everything works offline
+- **Persistent state** — Book file, reading position, voice, and speed saved across sessions
 
 ## Tech Stack
 
-- **Backend:** Python, FastAPI, Kokoro TTS, ebooklib, PyMuPDF
-- **Frontend:** Svelte 5, Vite, Tailwind CSS, TypeScript
+- **UI:** Svelte 5, Vite, Tailwind CSS, TypeScript
+- **Book parsing:** [epub.js](https://github.com/futurepress/epub.js) (EPUB), [PDF.js](https://github.com/nicolo-ribaudo/pdfjs-dist) (PDF)
+- **TTS:** [kokoro-js](https://www.npmjs.com/package/kokoro-js) — Kokoro 82M ONNX model running via Web Worker + WebAssembly
+- **Audio:** Web Audio API with AudioBufferSourceNode scheduling
 
 ## Setup
 
 ### Prerequisites
 
-- Python 3.11+
-- [uv](https://docs.astral.sh/uv/)
-- Node.js 18+
+- Node.js 20.19+
 
-### Installation
+### Install & Run
 
 ```bash
-# Clone the repo
-git clone git@github.com:EkChinHui/ebook-reader.git
-cd ebook-reader
-
-# Backend (uv auto-creates the venv and installs dependencies)
-uv sync
-
-# Frontend
-cd frontend
 npm install
-cd ..
+npm run dev
 ```
 
-### Development
+Open http://localhost:5173.
 
-Run both the backend and frontend dev servers:
+### Production Build
 
 ```bash
-./dev.sh
+npm run build
+npx vite preview
 ```
 
-- Backend: http://localhost:8000
-- Frontend: http://localhost:5173
+The `dist/` folder is fully static and can be deployed to any static host (Vercel, Netlify, GitHub Pages, etc).
 
-### Production
+## How It Works
 
-Build the frontend and serve everything from FastAPI:
-
-```bash
-./run.sh
-```
-
-The app will be available at http://localhost:8000.
-
-## API
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/upload` | Upload an EPUB or PDF file |
-| GET | `/api/books/{id}/chapters/{index}` | Get chapter text |
-| GET | `/api/voices` | List available TTS voices |
-| GET | `/api/narrate/{id}/{index}` | Stream chapter audio (WAV) |
-| GET | `/api/narrate-timed/{id}/{index}` | Generate audio with word-level timing |
-| GET | `/api/audio/{audio_id}` | Retrieve generated audio |
+1. **Upload** an EPUB or PDF — parsed entirely in the browser
+2. **TTS model** (~165 MB, q8 quantized) downloads on first book load and is cached by the browser
+3. **Click Play** — text is streamed sentence-by-sentence through a Web Worker running kokoro-js
+4. **Audio chunks** are scheduled via Web Audio API for gapless playback
+5. **Highlighting** tracks the current sentence in the reader view
+6. **Caching** — generated audio is cached in memory; book file and reading position persist in IndexedDB/localStorage
