@@ -1,6 +1,7 @@
 <script lang="ts">
   import { parseBook } from '../lib/book'
   import { parsedChapters, currentChapterIndex, chapterText, fileName, selectedVoice, playbackSpeed, ttsModelStatus, bookType, pdfDocument, cachedChapters } from '../lib/stores'
+  import type { Chapter } from '../lib/book'
   import { saveBookFile, saveReadingState, removeBookFile, removeReadingState, clearAudioCache } from '../lib/storage'
   import { getTTSManagerInstance } from '../lib/tts'
 
@@ -161,8 +162,8 @@
           <div class="absolute left-0 top-1/2 -translate-y-1/2 h-6 w-0.5 rounded-r bg-amber-accent"></div>
         {/if}
         <span class="inline-block transition-transform duration-200 group-hover/ch:translate-x-1" class:translate-x-1={active}>
-          <span class="mr-2 font-serif text-xs tabular-nums {active ? 'text-amber-accent' : 'text-parchment-400/30'}">{i + 1}</span>
-          <span class="group-hover/ch:text-parchment-200 transition-colors" class:font-medium={active}>{chapter.title}</span>
+          <span class="mr-2 font-serif text-xs tabular-nums {active ? 'text-amber-accent' : 'text-parchment-400/30'}">{chapter.pageNumber ?? i + 1}</span>
+          <span class="group-hover/ch:text-parchment-200 transition-colors" class:font-medium={active}>{chapter.pageNumber ? `Page ${chapter.pageNumber}` : chapter.title}</span>
           {#if cached}
             <span class="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400/70" title="Audio ready"></span>
           {/if}
