@@ -1,6 +1,7 @@
 import { writable } from 'svelte/store'
 import type { Chapter } from './book'
 import type { TTSModelStatus } from './tts'
+import type { PDFDocumentProxy } from 'pdfjs-dist'
 
 export interface TimedSegment {
   text: string
@@ -19,3 +20,13 @@ export const playbackSpeed = writable<number>(1.0)
 export const segments = writable<TimedSegment[]>([])
 export const currentSegmentIndex = writable<number>(-1)
 export const ttsModelStatus = writable<TTSModelStatus>('idle')
+export const autoAdvance = writable<boolean>(true)
+export const bookType = writable<'epub' | 'pdf'>('epub')
+export const pdfDocument = writable<PDFDocumentProxy | null>(null)
+
+/** When true, generate entire chapter audio before starting playback */
+export const preprocessMode = writable<boolean>(false)
+/** When true, eagerly generate audio for the current chapter in the background */
+export const eagerProcessing = writable<boolean>(false)
+/** Set of chapter indices that have cached audio (for current file/voice/speed) */
+export const cachedChapters = writable<Set<number>>(new Set())

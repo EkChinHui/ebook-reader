@@ -1,6 +1,6 @@
 <script lang="ts">
   import { parseBook } from '../lib/book'
-  import { parsedChapters, currentChapterIndex, chapterText, fileName, ttsModelStatus } from '../lib/stores'
+  import { parsedChapters, currentChapterIndex, chapterText, fileName, ttsModelStatus, bookType, pdfDocument } from '../lib/stores'
   import { saveBookFile } from '../lib/storage'
   import { getTTSManagerInstance } from '../lib/tts'
   import { onMount } from 'svelte'
@@ -50,14 +50,16 @@
     error = ''
     uploading = true
     try {
-      const chapters = await parseBook(file)
-      $parsedChapters = chapters
+      const result = await parseBook(file)
+      $parsedChapters = result.chapters
       $fileName = file.name
+      $bookType = result.type
+      $pdfDocument = result.pdfDocument ?? null
       saveBookFile(file)
 
-      if (chapters.length > 0) {
+      if (result.chapters.length > 0) {
         $currentChapterIndex = 0
-        $chapterText = chapters[0].text
+        $chapterText = result.chapters[0].text
       }
       onBookLoaded()
     } catch (err: any) {
@@ -168,7 +170,11 @@
       {/if}
     </button>
     <p class="mb-6 text-center text-xs text-parchment-400/35">
-      ~165 MB — cached after first download
+      {#if downloadTotal > 0}
+        ~{(downloadTotal / 1024 / 1024).toFixed(0)} MB — cached after first download
+      {:else}
+        ~88–330 MB — cached after first download
+      {/if}
       {#if modelReady}
         <span class="mx-1">·</span>
         <button type="button" class="underline hover:text-parchment-400/60 transition-colors" onclick={handleDeleteModel}>delete model</button>
@@ -215,5 +221,9 @@
     {#if error}
       <p class="mt-3 text-center text-sm text-red-400/90">{error}</p>
     {/if}
+
+    <p class="mt-8 text-center text-xs text-parchment-400/40">
+      Built by <a href="https://www.ekchinhui.com/" target="_blank" rel="noopener noreferrer" class="underline transition-colors hover:text-parchment-400/70">Ek Chin Hui</a>
+    </p>
   </div>
 </div>

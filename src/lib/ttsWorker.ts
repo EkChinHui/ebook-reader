@@ -4,6 +4,17 @@ let tts: KokoroTTS | null = null
 
 const MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX'
 
+async function detectDevice(): Promise<'webgpu' | 'wasm'> {
+  try {
+    const gpu = (navigator as any).gpu
+    if (gpu) {
+      const adapter = await gpu.requestAdapter()
+      if (adapter) return 'webgpu'
+    }
+  } catch {}
+  return 'wasm'
+}
+
 self.onmessage = async (e: MessageEvent) => {
   const msg = e.data
 
@@ -22,9 +33,12 @@ self.onmessage = async (e: MessageEvent) => {
   if (msg.type === 'init') {
     try {
       self.postMessage({ type: 'status', status: 'loading' })
+      const device = await detectDevice()
+      // kokoro-js docs recommend fp32 for WebGPU, q4 for WASM
+      const dtype = device === 'webgpu' ? 'fp32' : 'q4'
       tts = await KokoroTTS.from_pretrained(MODEL_ID, {
-        dtype: 'q8',
-        device: 'wasm',
+        dtype,
+        device,
         progress_callback: (() => {
           const files = new Map<string, { loaded: number; total: number }>()
           return (p: any) => {
@@ -43,7 +57,7 @@ self.onmessage = async (e: MessageEvent) => {
           }
         })(),
       })
-      self.postMessage({ type: 'status', status: 'ready' })
+      self.postMessage({ type: 'status', status: 'ready', device, dtype })
     } catch (err: any) {
       self.postMessage({ type: 'status', status: 'error', error: err.message })
     }
@@ -61,17 +75,21 @@ self.onmessage = async (e: MessageEvent) => {
       const splitter = new TextSplitterStream()
       const stream = tts.stream(splitter)
 
-      // Push all text and close - kokoro-js splits into sentences internally
-      splitter.push(text)
+      // Push text in paragraph-sized chunks to reduce memory pressure
+      // and allow the splitter to start yielding sentences sooner
+      const paragraphs = text.split(/\n\s*\n/)
+      for (const para of paragraphs) {
+        const trimmed = para.trim()
+        if (trimmed) splitter.push(trimmed + '\n')
+      }
       splitter.close()
 
       for await (const { text: chunkText, audio } of stream) {
-        // audio is a RawAudio with .audio (Float32Array) and .sampling_rate
         const samples = audio.audio
         const sampleRate = audio.sampling_rate
         self.postMessage(
           { type: 'chunk', generationId, text: chunkText, audio: samples, sampleRate },
-          { transfer: [samples.buffer] }  // Transfer ownership for zero-copy
+          { transfer: [samples.buffer] }
         )
       }
 

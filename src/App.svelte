@@ -5,14 +5,18 @@
   import Reader from './components/Reader.svelte'
   import AudioPlayer from './components/AudioPlayer.svelte'
   import { parseBook } from './lib/book'
-  import { parsedChapters, currentChapterIndex, chapterText, fileName, selectedVoice, playbackSpeed, ttsModelStatus } from './lib/stores'
-  import { loadBookFile, loadReadingState } from './lib/storage'
+  import { parsedChapters, currentChapterIndex, chapterText, fileName, selectedVoice, playbackSpeed, ttsModelStatus, bookType, pdfDocument } from './lib/stores'
+  import { loadBookFile, loadReadingState, loadAudioCache } from './lib/storage'
   import { getTTSManagerInstance } from './lib/tts'
 
   let view = $state<'landing' | 'reader'>('landing')
 
   function goToReader() {
     view = 'reader'
+  }
+
+  function goToLanding() {
+    view = 'landing'
   }
 
   onMount(async () => {
@@ -31,21 +35,26 @@
     if (!file) return
 
     try {
-      const chapters = await parseBook(file)
-      $parsedChapters = chapters
+      const result = await parseBook(file)
+      $parsedChapters = result.chapters
       $fileName = file.name
+      $bookType = result.type
+      $pdfDocument = result.pdfDocument ?? null
 
       const state = loadReadingState()
       if (state && state.fileName === file.name) {
         $selectedVoice = state.voice
         $playbackSpeed = state.speed
-        const idx = Math.min(state.chapterIndex, chapters.length - 1)
+        const idx = Math.min(state.chapterIndex, result.chapters.length - 1)
         $currentChapterIndex = idx
-        $chapterText = chapters[idx].text
-      } else if (chapters.length > 0) {
+        $chapterText = result.chapters[idx].text
+      } else if (result.chapters.length > 0) {
         $currentChapterIndex = 0
-        $chapterText = chapters[0].text
+        $chapterText = result.chapters[0].text
       }
+
+      // Hydrate audio cache from IndexedDB after stores are set
+      await loadAudioCache()
 
       view = 'reader'
     } catch (e) {
@@ -59,7 +68,7 @@
 {:else}
   <div class="flex h-screen flex-col bg-parchment-50 text-spine-900">
     <div class="flex flex-1 overflow-hidden">
-      <Sidebar />
+      <Sidebar onGoHome={goToLanding} />
       <Reader />
     </div>
     <AudioPlayer />

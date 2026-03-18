@@ -11,6 +11,13 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 export interface Chapter {
   title: string
   text: string
+  pageNumber?: number  // PDF-only: original 1-based page number
+}
+
+export interface ParsedBook {
+  type: 'epub' | 'pdf'
+  chapters: Chapter[]
+  pdfDocument?: pdfjsLib.PDFDocumentProxy
 }
 
 const BLOCK_TAGS = new Set([
@@ -123,7 +130,7 @@ async function parseEpub(arrayBuffer: ArrayBuffer): Promise<Chapter[]> {
   return chapters
 }
 
-async function parsePdf(arrayBuffer: ArrayBuffer): Promise<Chapter[]> {
+async function parsePdf(arrayBuffer: ArrayBuffer): Promise<{ chapters: Chapter[]; pdfDocument: pdfjsLib.PDFDocumentProxy }> {
   const data = new Uint8Array(arrayBuffer)
   const pdf = await pdfjsLib.getDocument({ data }).promise
 
@@ -147,22 +154,24 @@ async function parsePdf(arrayBuffer: ArrayBuffer): Promise<Chapter[]> {
 
     const cleaned = cleanPdfText(fullText.trim())
     if (cleaned.length > 20) {
-      pages.push({ title: `Page ${i}`, text: cleaned })
+      pages.push({ title: `Page ${i}`, text: cleaned, pageNumber: i })
     }
   }
 
-  await pdf.destroy()
-  return pages
+  // Keep PDF document alive for canvas rendering
+  return { chapters: pages, pdfDocument: pdf }
 }
 
-export async function parseBook(file: File): Promise<Chapter[]> {
+export async function parseBook(file: File): Promise<ParsedBook> {
   const ext = file.name.split('.').pop()?.toLowerCase()
   const arrayBuffer = await file.arrayBuffer()
 
   if (ext === 'epub') {
-    return parseEpub(arrayBuffer)
+    const chapters = await parseEpub(arrayBuffer)
+    return { type: 'epub', chapters }
   } else if (ext === 'pdf') {
-    return parsePdf(arrayBuffer)
+    const { chapters, pdfDocument } = await parsePdf(arrayBuffer)
+    return { type: 'pdf', chapters, pdfDocument }
   } else {
     throw new Error(`Unsupported format: .${ext}`)
   }

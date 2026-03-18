@@ -72,6 +72,9 @@ export class TTSManager {
   private handleMessage(msg: any) {
     if (msg.type === 'status') {
       this.status = msg.status
+      if (msg.status === 'ready' && msg.device) {
+        console.log(`[TTS] Model loaded: device=${msg.device}, dtype=${msg.dtype}`)
+      }
       this.onStatusChange?.(msg.status, msg.error)
       return
     }
