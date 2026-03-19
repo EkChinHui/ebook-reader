@@ -1,10 +1,166 @@
 <script lang="ts">
-  import { parsedChapters, currentChapterIndex, chapterText, isPlaying, selectedVoice, playbackSpeed, segments, currentSegmentIndex, fileName, ttsModelStatus, autoAdvance, eagerProcessing, bookType, eagerProcessingChapters, volume } from '../lib/stores'
+  import { parsedChapters, currentChapterIndex, chapterText, isPlaying, selectedVoice, playbackSpeed, segments, currentSegmentIndex, fileName, ttsModelStatus, autoAdvance, eagerProcessing, bookType, eagerProcessingChapters, volume, ttsEngine, browserVoiceURI } from '../lib/stores'
   import type { TimedSegment } from '../lib/stores'
   import { getCachedAudio, setCachedAudio, saveReadingState, refreshCachedChapters } from '../lib/storage'
   import { timeStretch } from '../lib/timeStretch'
   import { getTTSManagerInstance } from '../lib/tts'
   import type { TTSChunk } from '../lib/tts'
+  import { onMount } from 'svelte'
+
+  const KOKORO_VOICES = [
+    { id: 'af_heart', label: 'Heart' },
+    { id: 'af_bella', label: 'Bella' },
+    { id: 'af_nicole', label: 'Nicole' },
+    { id: 'af_sarah', label: 'Sarah' },
+    { id: 'af_sky', label: 'Sky' },
+    { id: 'am_adam', label: 'Adam' },
+    { id: 'am_michael', label: 'Michael' },
+    { id: 'bf_emma', label: 'Emma' },
+    { id: 'bf_isabella', label: 'Isabella' },
+    { id: 'bm_george', label: 'George' },
+    { id: 'bm_lewis', label: 'Lewis' },
+  ]
+
+  // --- Browser TTS state ---
+  let browserVoices: SpeechSynthesisVoice[] = []
+  let browserSentences: string[] = []
+  let browserSentenceIndex = 0
+  let browserPlaying = false
+  let browserPaused = false
+  let browserKeepAliveTimer: ReturnType<typeof setInterval> | null = null
+
+  function loadBrowserVoices() {
+    const voices = speechSynthesis.getVoices()
+    browserVoices = voices.filter(v => v.lang.startsWith('en'))
+    if (browserVoices.length === 0) browserVoices = voices
+    if (!$browserVoiceURI && browserVoices.length > 0) {
+      // Prefer a default English voice
+      const preferred = browserVoices.find(v => v.default) || browserVoices[0]
+      $browserVoiceURI = preferred.voiceURI
+    }
+  }
+
+  onMount(() => {
+    loadBrowserVoices()
+    speechSynthesis.addEventListener('voiceschanged', loadBrowserVoices)
+    return () => {
+      speechSynthesis.removeEventListener('voiceschanged', loadBrowserVoices)
+      stopBrowserKeepAlive()
+    }
+  })
+
+  function splitIntoSentences(text: string): string[] {
+    const raw = text.match(/[^.!?…]+[.!?…]+[\s"]*/g)
+    if (!raw) return text.trim() ? [text.trim()] : []
+    return raw.map(s => s.trim()).filter(Boolean)
+  }
+
+  function startBrowserKeepAlive() {
+    stopBrowserKeepAlive()
+    // Chrome workaround: pause/resume every 10s to prevent silent cutoff
+    browserKeepAliveTimer = setInterval(() => {
+      if (speechSynthesis.speaking && !speechSynthesis.paused) {
+        speechSynthesis.pause()
+        speechSynthesis.resume()
+      }
+    }, 10000)
+  }
+
+  function stopBrowserKeepAlive() {
+    if (browserKeepAliveTimer !== null) {
+      clearInterval(browserKeepAliveTimer)
+      browserKeepAliveTimer = null
+    }
+  }
+
+  function playBrowser() {
+    if (!$fileName || $currentChapterIndex < 0) return
+
+    speechSynthesis.cancel()
+    stopBrowserKeepAlive()
+
+    const sentences = splitIntoSentences($chapterText)
+    if (sentences.length === 0) return
+
+    browserSentences = sentences
+    browserSentenceIndex = 0
+    browserPlaying = true
+    browserPaused = false
+    $isPlaying = true
+
+    // Set up segments for sentence highlighting
+    $segments = sentences.map((text, i) => ({ text, start: i, end: i + 1 }))
+    $currentSegmentIndex = 0
+
+    startBrowserKeepAlive()
+    speakNextSentence()
+  }
+
+  function speakNextSentence() {
+    if (!browserPlaying || browserSentenceIndex >= browserSentences.length) {
+      // Done with chapter
+      browserPlaying = false
+      $isPlaying = false
+      $currentSegmentIndex = -1
+      stopBrowserKeepAlive()
+      if ($autoAdvance && $currentChapterIndex < $parsedChapters.length - 1) {
+        advanceToNextChapter()
+      }
+      return
+    }
+
+    const utterance = new SpeechSynthesisUtterance(browserSentences[browserSentenceIndex])
+
+    const voice = browserVoices.find(v => v.voiceURI === $browserVoiceURI)
+    if (voice) utterance.voice = voice
+    utterance.rate = $playbackSpeed
+    utterance.volume = $volume
+
+    utterance.onstart = () => {
+      $currentSegmentIndex = browserSentenceIndex
+    }
+
+    utterance.onend = () => {
+      browserSentenceIndex++
+      if (browserPlaying) speakNextSentence()
+    }
+
+    utterance.onerror = (e) => {
+      if (e.error === 'canceled' || e.error === 'interrupted') return
+      browserSentenceIndex++
+      if (browserPlaying) speakNextSentence()
+    }
+
+    speechSynthesis.speak(utterance)
+  }
+
+  function stopBrowser() {
+    speechSynthesis.cancel()
+    stopBrowserKeepAlive()
+    browserPlaying = false
+    browserPaused = false
+    browserSentences = []
+    browserSentenceIndex = 0
+    $isPlaying = false
+    $currentSegmentIndex = -1
+    $segments = []
+  }
+
+  function togglePlayPauseBrowser() {
+    if (browserPlaying && !browserPaused) {
+      speechSynthesis.pause()
+      browserPaused = true
+      $isPlaying = false
+      stopBrowserKeepAlive()
+    } else if (browserPaused) {
+      speechSynthesis.resume()
+      browserPaused = false
+      $isPlaying = true
+      startBrowserKeepAlive()
+    } else {
+      playBrowser()
+    }
+  }
 
   let loading = false
   let currentTime = 0
@@ -465,6 +621,10 @@
   }
 
   function togglePlayPause() {
+    if ($ttsEngine === 'browser') {
+      togglePlayPauseBrowser()
+      return
+    }
     if (bufferState === 'buffering' || bufferState === 'rebuffering') {
       stop()
     } else if (!$isPlaying && decodedChunks.length === 0) {
@@ -541,27 +701,41 @@
     const newIndex = $currentChapterIndex + delta
     if (newIndex < 0 || newIndex >= $parsedChapters.length) return
 
-    const wasPlaying = $isPlaying
-    cancelEagerGen()
-    stop()
+    const wasPlaying = $isPlaying || browserPlaying
+    if ($ttsEngine === 'browser') {
+      stopBrowser()
+    } else {
+      cancelEagerGen()
+      stop()
+    }
 
     prevChapterIndex = newIndex
     $currentChapterIndex = newIndex
     $chapterText = $parsedChapters[newIndex].text
 
-    if (wasPlaying) play()
+    if (wasPlaying) {
+      if ($ttsEngine === 'browser') playBrowser()
+      else play()
+    }
   }
 
   function advanceToNextChapter() {
     const newIndex = $currentChapterIndex + 1
     if (newIndex >= $parsedChapters.length) return
-    cancelEagerGen()
-    stop()
+
+    if ($ttsEngine === 'browser') {
+      stopBrowser()
+    } else {
+      cancelEagerGen()
+      stop()
+    }
 
     prevChapterIndex = newIndex
     $currentChapterIndex = newIndex
     $chapterText = $parsedChapters[newIndex].text
-    play()
+
+    if ($ttsEngine === 'browser') playBrowser()
+    else play()
   }
 
   // --- Eager processing: background TTS generation with queue ---
@@ -873,8 +1047,20 @@
   let prevChapterIndex = $currentChapterIndex
   $: if ($currentChapterIndex !== prevChapterIndex) {
     prevChapterIndex = $currentChapterIndex
-    cancelEagerGen()
-    stop()
+    if ($ttsEngine === 'browser') {
+      stopBrowser()
+    } else {
+      cancelEagerGen()
+      stop()
+    }
+  }
+
+  // Stop playback when engine changes
+  let prevEngine = $ttsEngine
+  $: if ($ttsEngine !== prevEngine) {
+    if (prevEngine === 'browser') stopBrowser()
+    else { cancelEagerGen(); stop() }
+    prevEngine = $ttsEngine
   }
 
   // Cancel eager generation when toggle is turned off
@@ -882,8 +1068,8 @@
     cancelEagerGen()
   }
 
-  // Trigger eager generation when chapter changes and nothing is playing
-  $: if ($eagerProcessing && $ttsModelStatus === 'ready' && $fileName &&
+  // Trigger eager generation when chapter changes and nothing is playing (Kokoro only)
+  $: if ($ttsEngine === 'kokoro' && $eagerProcessing && $ttsModelStatus === 'ready' && $fileName &&
          $currentChapterIndex >= 0 && !$isPlaying && bufferState === 'idle' &&
          !getCachedAudio($fileName, $currentChapterIndex, $selectedVoice, $playbackSpeed)) {
     eagerGenerate($currentChapterIndex)
@@ -899,11 +1085,14 @@
   // Refresh cached chapters indicator when context changes
   $: if ($fileName) refreshCachedChapters($fileName, $selectedVoice, $playbackSpeed)
 
-  $: canPlay = $fileName && $currentChapterIndex >= 0 && !loading && $ttsModelStatus === 'ready'
+  $: isBrowser = $ttsEngine === 'browser'
+  $: canPlay = $fileName && $currentChapterIndex >= 0 && !loading && (isBrowser || $ttsModelStatus === 'ready')
   $: hasPrev = $currentChapterIndex > 0
   $: hasNext = $currentChapterIndex < $parsedChapters.length - 1
-  $: hasAudio = decodedChunks.length > 0
-  $: progress = duration > 0 ? (currentTime / duration) * 100 : 0
+  $: hasAudio = isBrowser ? browserPlaying || browserPaused : decodedChunks.length > 0
+  $: progress = isBrowser
+    ? (browserSentences.length > 0 ? (browserSentenceIndex / browserSentences.length) * 100 : 0)
+    : (duration > 0 ? (currentTime / duration) * 100 : 0)
   $: isBuffering = bufferState === 'buffering' || bufferState === 'rebuffering'
   $: volumePercent = Math.round($volume * 100)
   $: volumeIcon = $volume === 0 ? 'muted' : $volume < 0.5 ? 'low' : 'high'
@@ -915,24 +1104,26 @@
 
   <!-- Progress bar -->
   {#if hasAudio}
-    <div class="relative h-1 w-full bg-spine-900/[0.04] cursor-pointer group">
+    <div class="relative h-1 w-full bg-spine-900/[0.04] {isBrowser ? '' : 'cursor-pointer'} group">
       <div
         class="absolute left-0 top-0 h-full bg-gradient-to-r from-amber-accent to-amber-glow transition-all duration-100"
         style="width: {progress}%"
       ></div>
-      <input
-        type="range"
-        min="0"
-        max={duration}
-        step="0.1"
-        value={currentTime}
-        oninput={handleSeek}
-        class="progress-seek absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-      />
+      {#if !isBrowser}
+        <input
+          type="range"
+          min="0"
+          max={duration}
+          step="0.1"
+          value={currentTime}
+          oninput={handleSeek}
+          class="progress-seek absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+        />
+      {/if}
     </div>
   {/if}
 
-  {#if isBuffering}
+  {#if !isBrowser && isBuffering}
     <div class="relative h-0.5 w-full bg-spine-900/[0.04]">
       <div
         class="absolute left-0 top-0 h-full bg-amber-accent/60 transition-all duration-300"
@@ -942,11 +1133,11 @@
     <div class="text-xs text-amber-accent/70 text-center py-1">
       {bufferState === 'rebuffering' ? 'Rebuffering' : 'Buffering'}... {Math.round(bufferProgress)}%
     </div>
-  {:else if $ttsModelStatus === 'loading'}
+  {:else if !isBrowser && $ttsModelStatus === 'loading'}
     <div class="text-xs text-amber-accent/70 text-center py-1">Loading TTS model...</div>
-  {:else if $ttsModelStatus === 'error'}
+  {:else if !isBrowser && $ttsModelStatus === 'error'}
     <div class="text-xs text-red-400/70 text-center py-1">TTS model failed to load</div>
-  {:else if $ttsModelStatus === 'idle'}
+  {:else if !isBrowser && $ttsModelStatus === 'idle'}
     <div class="text-xs text-parchment-400/40 text-center py-1">TTS model not loaded</div>
   {/if}
 
@@ -965,7 +1156,8 @@
         </svg>
       </button>
 
-      <!-- Rewind 10s -->
+      <!-- Rewind 10s (Kokoro only) -->
+      {#if !isBrowser}
       <button
         class="flex h-8 w-8 items-center justify-center rounded-lg transition-colors {hasAudio ? 'text-spine-800/50 hover:text-spine-800 hover:bg-spine-900/[0.05]' : 'text-spine-900/15'}"
         disabled={!hasAudio}
@@ -978,6 +1170,7 @@
           <text x="12" y="15.5" font-size="7" font-weight="600" fill="currentColor" stroke="none" text-anchor="middle">10</text>
         </svg>
       </button>
+      {/if}
 
       <!-- Play/Pause -->
       <button
@@ -1002,7 +1195,8 @@
         {/if}
       </button>
 
-      <!-- Forward 30s -->
+      <!-- Forward 30s (Kokoro only) -->
+      {#if !isBrowser}
       <button
         class="flex h-8 w-8 items-center justify-center rounded-lg transition-colors {hasAudio ? 'text-spine-800/50 hover:text-spine-800 hover:bg-spine-900/[0.05]' : 'text-spine-900/15'}"
         disabled={!hasAudio}
@@ -1015,6 +1209,7 @@
           <text x="12" y="15.5" font-size="7" font-weight="600" fill="currentColor" stroke="none" text-anchor="middle">30</text>
         </svg>
       </button>
+      {/if}
 
       <!-- Next chapter -->
       <button
@@ -1032,7 +1227,11 @@
     <!-- Time display -->
     {#if hasAudio}
       <span class="ml-2 text-xs tabular-nums text-spine-800/40 font-sans">
-        {formatTime(currentTime)} / {formatTime(duration)}
+        {#if isBrowser}
+          {browserSentenceIndex + 1} / {browserSentences.length}
+        {:else}
+          {formatTime(currentTime)} / {formatTime(duration)}
+        {/if}
       </span>
     {/if}
 
@@ -1072,6 +1271,29 @@
       />
     </div>
 
+    <!-- Voice selector -->
+    <div class="flex items-center gap-1.5">
+      <select
+        value={isBrowser ? $browserVoiceURI : $selectedVoice}
+        onchange={(e) => {
+          const val = (e.target as HTMLSelectElement).value
+          if (isBrowser) $browserVoiceURI = val
+          else $selectedVoice = val
+        }}
+        class="max-w-[120px] rounded-lg border border-spine-900/[0.08] bg-parchment-100/80 px-2 py-1 font-sans text-xs text-spine-800 transition-colors hover:border-amber-accent/30 focus:border-amber-accent/50 focus:outline-none focus:ring-1 focus:ring-amber-accent/20"
+      >
+        {#if isBrowser}
+          {#each browserVoices as v}
+            <option value={v.voiceURI}>{v.name.replace(/^(Microsoft |Google |Apple )/, '')}</option>
+          {/each}
+        {:else}
+          {#each KOKORO_VOICES as v}
+            <option value={v.id}>{v.label}</option>
+          {/each}
+        {/if}
+      </select>
+    </div>
+
     <!-- Speed button -->
     <button
       class="rounded-lg border border-spine-900/[0.08] bg-parchment-100/80 px-2.5 py-1 font-serif text-sm font-semibold tabular-nums text-spine-800 transition-colors hover:border-amber-accent/30 hover:text-amber-accent"
@@ -1091,26 +1313,28 @@
         />
         <span class="text-xs text-spine-800/40">Autoplay</span>
       </label>
-      <button
-        class="flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs transition-all duration-300 select-none
-          {$eagerProcessing
-            ? $eagerProcessingChapters.size > 0
-              ? 'border-amber-accent/40 bg-amber-accent/10 text-amber-accent'
-              : 'border-emerald-400/30 bg-emerald-400/10 text-emerald-400/80'
-            : 'border-spine-900/[0.08] bg-parchment-100/80 text-spine-800/40 hover:border-amber-accent/30 hover:text-spine-800/60'
-          }"
-        onclick={() => $eagerProcessing = !$eagerProcessing}
-        title={$eagerProcessing ? 'Disable background audio generation' : 'Pre-generate audio for upcoming chapters'}
-      >
-        {#if $eagerProcessing && $eagerProcessingChapters.size > 0}
-          <span class="inline-block h-1.5 w-1.5 rounded-full bg-amber-accent animate-pulse"></span>
-        {:else if $eagerProcessing}
-          <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
-          </svg>
-        {/if}
-        <span>Eager</span>
-      </button>
+      {#if !isBrowser}
+        <button
+          class="flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs transition-all duration-300 select-none
+            {$eagerProcessing
+              ? $eagerProcessingChapters.size > 0
+                ? 'border-amber-accent/40 bg-amber-accent/10 text-amber-accent'
+                : 'border-emerald-400/30 bg-emerald-400/10 text-emerald-400/80'
+              : 'border-spine-900/[0.08] bg-parchment-100/80 text-spine-800/40 hover:border-amber-accent/30 hover:text-spine-800/60'
+            }"
+          onclick={() => $eagerProcessing = !$eagerProcessing}
+          title={$eagerProcessing ? 'Disable background audio generation' : 'Pre-generate audio for upcoming chapters'}
+        >
+          {#if $eagerProcessing && $eagerProcessingChapters.size > 0}
+            <span class="inline-block h-1.5 w-1.5 rounded-full bg-amber-accent animate-pulse"></span>
+          {:else if $eagerProcessing}
+            <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+            </svg>
+          {/if}
+          <span>Eager</span>
+        </button>
+      {/if}
     </div>
 
     <!-- Status indicator -->

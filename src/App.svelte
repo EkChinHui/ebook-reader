@@ -5,7 +5,7 @@
   import Reader from './components/Reader.svelte'
   import AudioPlayer from './components/AudioPlayer.svelte'
   import { parseBook } from './lib/book'
-  import { parsedChapters, currentChapterIndex, chapterText, fileName, selectedVoice, playbackSpeed, ttsModelStatus, bookType, pdfDocument } from './lib/stores'
+  import { parsedChapters, currentChapterIndex, chapterText, fileName, selectedVoice, playbackSpeed, ttsModelStatus, bookType, pdfDocument, ttsEngine } from './lib/stores'
   import { loadBookFile, loadReadingState, loadAudioCache } from './lib/storage'
   import { getTTSManagerInstance } from './lib/tts'
 
@@ -23,12 +23,19 @@
     const tts = getTTSManagerInstance()
     tts.setOnStatusChange((status) => { $ttsModelStatus = status })
 
+    // Restore saved engine preference
+    const savedEngine = localStorage.getItem('ttsEngine') as 'browser' | 'kokoro' | null
+    if (savedEngine) $ttsEngine = savedEngine
+
     const isCached = await tts.checkCached()
 
-    if (!isCached) return
-
-    // Model is cached — start loading it in the background
-    tts.init()
+    if (isCached) {
+      // Model is cached — start loading it in the background
+      tts.init()
+    } else if ($ttsEngine !== 'browser') {
+      // No cached model and not using browser TTS — stay on landing
+      return
+    }
 
     // Try to restore saved book
     const file = await loadBookFile()
@@ -60,6 +67,11 @@
     } catch (e) {
       console.error('Failed to restore book:', e)
     }
+  })
+
+  // Persist engine preference
+  $effect(() => {
+    localStorage.setItem('ttsEngine', $ttsEngine)
   })
 </script>
 

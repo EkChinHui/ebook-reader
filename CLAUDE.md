@@ -35,8 +35,18 @@ src/
 - **Singleton TTSManager**: `getTTSManagerInstance()` ensures one model load shared between App.svelte (eager init) and AudioPlayer (playback).
 - **Svelte reactivity**: Arrays must be reassigned (`arr = [...arr, item]`) not mutated (`arr.push(item)`) to trigger reactivity.
 
-## TTS Model
+## TTS Engines
 
+Two engines selectable via `ttsEngine` store (`'browser' | 'kokoro'`), persisted to localStorage:
+
+### Browser TTS (Web Speech API)
+- Zero setup — uses `speechSynthesis` built into the browser
+- Voices from `speechSynthesis.getVoices()`, filtered to English by default
+- Sentence-by-sentence playback with highlighting via utterance callbacks
+- Chrome keep-alive workaround (pause/resume every 10s to prevent silent cutoff)
+- No seeking, no caching, no eager generation — simpler playback path
+
+### Kokoro AI TTS
 - Package: `kokoro-js`
 - Model: `onnx-community/Kokoro-82M-v1.0-ONNX`
 - Quantization: `q8` (~165 MB)

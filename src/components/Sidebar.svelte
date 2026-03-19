@@ -1,6 +1,6 @@
 <script lang="ts">
   import { parseBook } from '../lib/book'
-  import { parsedChapters, currentChapterIndex, chapterText, fileName, selectedVoice, playbackSpeed, ttsModelStatus, bookType, pdfDocument, cachedChapters, eagerProcessingChapters } from '../lib/stores'
+  import { parsedChapters, currentChapterIndex, chapterText, fileName, selectedVoice, playbackSpeed, ttsModelStatus, bookType, pdfDocument, cachedChapters, eagerProcessingChapters, ttsEngine } from '../lib/stores'
   import type { Chapter } from '../lib/book'
   import { saveBookFile, saveReadingState, removeBookFile, removeReadingState, clearAudioCache } from '../lib/storage'
   import { getTTSManagerInstance } from '../lib/tts'
@@ -37,10 +37,12 @@
       $pdfDocument = result.pdfDocument ?? null
       saveBookFile(file)
 
-      // Start loading TTS model on first book upload
-      const tts = getTTSManagerInstance()
-      tts.setOnStatusChange((status) => { $ttsModelStatus = status })
-      tts.init()
+      // Start loading TTS model on first book upload (Kokoro only)
+      if ($ttsEngine === 'kokoro' && $ttsModelStatus !== 'ready' && $ttsModelStatus !== 'loading') {
+        const tts = getTTSManagerInstance()
+        tts.setOnStatusChange((status) => { $ttsModelStatus = status })
+        tts.init()
+      }
 
       if (result.chapters.length > 0) {
         selectChapter(0)
@@ -143,6 +145,45 @@
   <!-- Divider -->
   <div class="mx-5 h-px bg-gradient-to-r from-transparent via-parchment-400/15 to-transparent"></div>
 
+  <!-- Engine toggle -->
+  <div class="relative z-10 px-5 py-3">
+    <div class="flex rounded-lg bg-spine-800/50 p-0.5">
+      <button
+        class="flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-all duration-200
+          {$ttsEngine === 'browser'
+            ? 'bg-parchment-400/15 text-parchment-200 shadow-sm'
+            : 'text-parchment-400/40 hover:text-parchment-400/60'
+          }"
+        onclick={() => $ttsEngine = 'browser'}
+      >
+        Browser
+      </button>
+      <button
+        class="flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-all duration-200
+          {$ttsEngine === 'kokoro'
+            ? 'bg-parchment-400/15 text-parchment-200 shadow-sm'
+            : 'text-parchment-400/40 hover:text-parchment-400/60'
+          }"
+        onclick={() => {
+          $ttsEngine = 'kokoro'
+          if ($ttsModelStatus === 'idle') {
+            const tts = getTTSManagerInstance()
+            tts.setOnStatusChange((status) => { $ttsModelStatus = status })
+            tts.init()
+          }
+        }}
+      >
+        Kokoro AI
+      </button>
+    </div>
+    <p class="mt-1.5 text-[10px] text-parchment-400/30 text-center">
+      {$ttsEngine === 'browser' ? 'Fast, robotic voice' : 'Natural AI voice'}
+    </p>
+  </div>
+
+  <!-- Divider -->
+  <div class="mx-5 h-px bg-gradient-to-r from-transparent via-parchment-400/15 to-transparent"></div>
+
   <!-- Chapter list -->
   <nav class="relative z-10 flex-1 overflow-y-auto py-2">
     {#if $parsedChapters.length === 0}
@@ -165,10 +206,12 @@
         <span class="inline-block transition-transform duration-200 group-hover/ch:translate-x-1" class:translate-x-1={active}>
           <span class="mr-2 font-serif text-xs tabular-nums {active ? 'text-amber-accent' : 'text-parchment-400/30'}">{chapter.pageNumber ?? i + 1}</span>
           <span class="group-hover/ch:text-parchment-200 transition-colors" class:font-medium={active}>{chapter.pageNumber ? `Page ${chapter.pageNumber}` : chapter.title}</span>
-          {#if processing}
-            <span class="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-amber-accent animate-pulse" title="Generating audio..."></span>
-          {:else if cached}
-            <span class="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400/70" title="Audio ready"></span>
+          {#if $ttsEngine === 'kokoro'}
+            {#if processing}
+              <span class="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-amber-accent animate-pulse" title="Generating audio..."></span>
+            {:else if cached}
+              <span class="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-emerald-400/70" title="Audio ready"></span>
+            {/if}
           {/if}
         </span>
       </button>
