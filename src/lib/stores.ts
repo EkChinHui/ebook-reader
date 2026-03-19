@@ -24,9 +24,11 @@ export const autoAdvance = writable<boolean>(true)
 export const bookType = writable<'epub' | 'pdf'>('epub')
 export const pdfDocument = writable<PDFDocumentProxy | null>(null)
 
-/** When true, generate entire chapter audio before starting playback */
-export const preprocessMode = writable<boolean>(false)
 /** When true, eagerly generate audio for the current chapter in the background */
 export const eagerProcessing = writable<boolean>(false)
 /** Set of chapter indices that have cached audio (for current file/voice/speed) */
 export const cachedChapters = writable<Set<number>>(new Set())
+/** Set of chapter indices currently being eagerly generated or queued */
+export const eagerProcessingChapters = writable<Set<number>>(new Set())
+/** Volume level 0–1 */
+export const volume = writable<number>(1.0)

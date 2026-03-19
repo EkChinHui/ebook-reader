@@ -1,24 +1,10 @@
 <script lang="ts">
-  import { parsedChapters, currentChapterIndex, chapterText, isPlaying, selectedVoice, playbackSpeed, segments, currentSegmentIndex, fileName, ttsModelStatus, autoAdvance, preprocessMode, eagerProcessing, bookType } from '../lib/stores'
+  import { parsedChapters, currentChapterIndex, chapterText, isPlaying, selectedVoice, playbackSpeed, segments, currentSegmentIndex, fileName, ttsModelStatus, autoAdvance, eagerProcessing, bookType, eagerProcessingChapters, volume } from '../lib/stores'
   import type { TimedSegment } from '../lib/stores'
   import { getCachedAudio, setCachedAudio, saveReadingState, refreshCachedChapters } from '../lib/storage'
   import { timeStretch } from '../lib/timeStretch'
   import { getTTSManagerInstance } from '../lib/tts'
   import type { TTSChunk } from '../lib/tts'
-
-  const VOICES = [
-    { id: 'af_heart', label: 'Heart' },
-    { id: 'af_bella', label: 'Bella' },
-    { id: 'af_nicole', label: 'Nicole' },
-    { id: 'af_sarah', label: 'Sarah' },
-    { id: 'af_sky', label: 'Sky' },
-    { id: 'am_adam', label: 'Adam' },
-    { id: 'am_michael', label: 'Michael' },
-    { id: 'bf_emma', label: 'Emma' },
-    { id: 'bf_isabella', label: 'Isabella' },
-    { id: 'bm_george', label: 'George' },
-    { id: 'bm_lewis', label: 'Lewis' },
-  ]
 
   let loading = false
   let currentTime = 0
@@ -36,7 +22,7 @@
   let streamingDone = false
   let playGeneration = 0
   let lastSaveTime = 0
-  let bufferUnderrunCtxTime: number | null = null  // ctx.currentTime when we ran out of audio
+  let bufferUnderrunCtxTime: number | null = null
 
   // Client-side TTS
   let cachedAudioChunks: { audio: Float32Array; sampleRate: number }[] = []
@@ -46,13 +32,14 @@
   let bufferState: BufferState = 'idle'
   let bufferProgress = 0
   let currentTargetBuffer = 0
-  let rebufferCount = 0        // consecutive rebuffers — drives exponential backoff
+  let rebufferCount = 0
 
-  const BUFFER_MIN = 0.8       // seconds — absolute floor
-  const BUFFER_MAX = 10.0      // seconds — hard cap even with backoff
-  const LOW_WATERMARK = 0.3    // seconds — only rebuffer when nearly out
-  const RESUME_BUFFER_BASE = 1.0  // base seconds of lead needed to resume
-  const PAUSE_TOLERANCE = 1.5  // survive this many seconds of generation stall
+  const BUFFER_MIN = 0.8
+  const BUFFER_MAX = 10.0
+  const LOW_WATERMARK = 0.3
+  const RESUME_BUFFER_BASE = 1.0
+  const PAUSE_TOLERANCE = 1.5
+  const EAGER_LOOKAHEAD = 3
 
   class BufferMonitor {
     private firstChunkTime = 0
@@ -76,14 +63,12 @@
       this.chunkCount++
       this.recentRawDurations.push(rawDuration)
       this.recentTimestamps.push(now)
-      // Keep rolling window of last 8 chunks
       if (this.recentRawDurations.length > 8) {
         this.recentRawDurations.shift()
         this.recentTimestamps.shift()
       }
     }
 
-    /** Overall generation rate: raw audio seconds per wall-clock second */
     getGenerationRate(): number | null {
       if (this.chunkCount < 2) return null
       const elapsed = (performance.now() - this.firstChunkTime) / 1000
@@ -99,8 +84,6 @@
   const bufferMonitor = new BufferMonitor()
 
   function computeTargetBuffer(G: number, C: number): number {
-    // How much audio drains during a generation stall of PAUSE_TOLERANCE seconds
-    // Scaled down when generation is fast relative to consumption
     return Math.min(BUFFER_MAX, Math.max(BUFFER_MIN, PAUSE_TOLERANCE * C / Math.max(1, G)))
   }
 
@@ -108,10 +91,14 @@
     if (!audioCtx) {
       audioCtx = new AudioContext()
       gainNode = audioCtx.createGain()
+      gainNode.gain.value = $volume
       gainNode.connect(audioCtx.destination)
     }
     return audioCtx
   }
+
+  // Sync volume store to gainNode
+  $: if (gainNode) gainNode.gain.value = $volume
 
   function stopAllSources() {
     for (const s of activeSourceNodes) {
@@ -147,7 +134,6 @@
         currentTime = Math.min(playbackStartOffset + elapsed, totalAudioDuration)
         duration = totalAudioDuration
 
-        // Check buffer health — trigger rebuffering if lead is too low
         if (bufferState === 'playing' && !streamingDone) {
           const bufferLead = totalAudioDuration - currentTime
           if (bufferLead < LOW_WATERMARK) {
@@ -206,7 +192,6 @@
             advanceToNextChapter()
           }
         } else {
-          // Buffer underrun — pause the virtual clock until new audio arrives
           bufferUnderrunCtxTime = audioCtx!.currentTime
         }
       }
@@ -271,26 +256,50 @@
       scheduleOneChunk(i)
     }
     startTimeTracking()
+
+    // Kick off eager generation for upcoming chapters
+    if ($eagerProcessing && $autoAdvance) {
+      startEagerQueue($currentChapterIndex + 1)
+    }
   }
 
   function play() {
     if (!$fileName || $currentChapterIndex < 0 || loading) return
 
-    // Check audio cache first
     const cached = getCachedAudio($fileName, $currentChapterIndex, $selectedVoice, $playbackSpeed)
     if (cached) {
       playFromCache(cached)
       return
     }
 
-    // Ensure TTS model is loaded
     const manager = getTTSManagerInstance()
-    if (manager.getStatus() !== 'ready') {
+    if (manager.getStatus() !== 'ready') return
+
+    // If eager gen is in-flight for this exact chapter/voice/speed, take it over
+    if (eagerChapterIndex === $currentChapterIndex &&
+        eagerVoice === $selectedVoice &&
+        eagerSpeed === $playbackSpeed &&
+        eagerChunks.length > 0) {
+      playFromEager()
       return
     }
 
     // Cancel any eager background generation — worker can only do one thing
     cancelEagerGen()
+
+    // Re-populate the eager queue for sidebar display (won't process until onDone)
+    if ($eagerProcessing && $autoAdvance && $fileName) {
+      const queue: number[] = []
+      for (let i = $currentChapterIndex + 1; i < $parsedChapters.length && queue.length < EAGER_LOOKAHEAD; i++) {
+        if (!getCachedAudio($fileName, i, $selectedVoice, $playbackSpeed)) {
+          queue.push(i)
+        }
+      }
+      if (queue.length > 0) {
+        eagerQueue = queue
+        updateEagerStore()
+      }
+    }
 
     loading = true
     streamingDone = false
@@ -313,7 +322,6 @@
 
     const allSegments: TimedSegment[] = []
 
-    /** Transition from buffering/rebuffering to playing */
     function startPlayback() {
       bufferState = 'playing'
       loading = false
@@ -324,7 +332,6 @@
       playbackStartOffset = currentTime
       $isPlaying = true
 
-      // Schedule all buffered chunks
       for (let i = 0; i < decodedChunks.length; i++) {
         const chunkEnd = decodedChunks[i].startTime + decodedChunks[i].buffer.duration
         if (chunkEnd <= currentTime) continue
@@ -356,28 +363,20 @@
       totalAudioDuration += audioBuffer.duration
       duration = totalAudioDuration
 
-      // Update target buffer once we have enough rate data
       if (bufferMonitor.hasEnoughData()) {
         const G = bufferMonitor.getGenerationRate()!
         currentTargetBuffer = computeTargetBuffer(G, $playbackSpeed)
       }
 
       if (bufferState === 'buffering') {
-        if ($preprocessMode) {
-          // Preprocess mode: show chunk-count progress, wait for all audio
-          bufferProgress = 0 // updated in onDone; chunk count isn't known upfront
-        } else {
-          // Smart buffering: start when target buffer is met
-          bufferProgress = currentTargetBuffer > 0
-            ? Math.min(99, (totalAudioDuration / currentTargetBuffer) * 100)
-            : 0
+        bufferProgress = currentTargetBuffer > 0
+          ? Math.min(99, (totalAudioDuration / currentTargetBuffer) * 100)
+          : 0
 
-          if (totalAudioDuration >= currentTargetBuffer) {
-            startPlayback()
-          }
+        if (totalAudioDuration >= currentTargetBuffer) {
+          startPlayback()
         }
       } else if (bufferState === 'rebuffering') {
-        // Exponential backoff: each consecutive rebuffer doubles the resume threshold
         const resumeTarget = Math.min(BUFFER_MAX, RESUME_BUFFER_BASE * Math.pow(2, rebufferCount - 1))
         const bufferLead = totalAudioDuration - currentTime
         bufferProgress = Math.min(99, (bufferLead / resumeTarget) * 100)
@@ -386,7 +385,6 @@
           startPlayback()
         }
       } else if (bufferState === 'playing' && $isPlaying) {
-        // If we had a buffer underrun (edge case fallback), shift the clock
         if (bufferUnderrunCtxTime !== null) {
           playbackStartCtxTime += (ctx.currentTime - bufferUnderrunCtxTime)
           bufferUnderrunCtxTime = null
@@ -399,7 +397,6 @@
       if (gen !== playGeneration) return
       streamingDone = true
 
-      // If still buffering/rebuffering when done, start playback with whatever we have
       if (bufferState === 'buffering' || bufferState === 'rebuffering') {
         if (decodedChunks.length > 0) {
           startPlayback()
@@ -416,12 +413,21 @@
         })
       }
 
-      // Eager processing: start generating next chapter in background
-      if ($eagerProcessing && $autoAdvance) {
-        const nextIdx = $currentChapterIndex + 1
-        if (nextIdx < $parsedChapters.length) {
-          eagerGenerate(nextIdx)
+      // Race fix: if all audio was consumed before streamingDone became true,
+      // the last source.onended went to the buffer-underrun path instead of advancing.
+      if (bufferState === 'playing' && activeSourceNodes.length === 0 && $isPlaying) {
+        $isPlaying = false
+        $currentSegmentIndex = -1
+        stopTimeTracking()
+        if ($autoAdvance && $currentChapterIndex < $parsedChapters.length - 1) {
+          advanceToNextChapter()
         }
+        return
+      }
+
+      // Eager processing: start generating next chapters in background
+      if ($eagerProcessing && $autoAdvance) {
+        startEagerQueue($currentChapterIndex + 1)
       }
     })
 
@@ -460,7 +466,6 @@
 
   function togglePlayPause() {
     if (bufferState === 'buffering' || bufferState === 'rebuffering') {
-      // User hit pause during buffering — cancel everything
       stop()
     } else if (!$isPlaying && decodedChunks.length === 0) {
       play()
@@ -471,6 +476,7 @@
       persistPosition()
     } else if (!$isPlaying && audioCtx && decodedChunks.length > 0) {
       audioCtx.resume()
+      rescheduleAllFrom(currentTime)
       $isPlaying = true
       startTimeTracking()
     }
@@ -521,7 +527,6 @@
     const speeds = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
     const current = speeds.findIndex(s => Math.abs(s - $playbackSpeed) < 0.05)
     $playbackSpeed = speeds[(current + 1) % speeds.length]
-    // Recalculate target buffer for new consumption rate
     if (bufferMonitor.hasEnoughData()) {
       const G = bufferMonitor.getGenerationRate()!
       currentTargetBuffer = computeTargetBuffer(G, $playbackSpeed)
@@ -540,7 +545,7 @@
     cancelEagerGen()
     stop()
 
-    prevChapterIndex = newIndex  // prevent reactive block from double-stopping
+    prevChapterIndex = newIndex
     $currentChapterIndex = newIndex
     $chapterText = $parsedChapters[newIndex].text
 
@@ -553,26 +558,62 @@
     cancelEagerGen()
     stop()
 
-    prevChapterIndex = newIndex  // prevent reactive block from double-stopping
+    prevChapterIndex = newIndex
     $currentChapterIndex = newIndex
     $chapterText = $parsedChapters[newIndex].text
     play()
   }
 
-  // --- Eager processing: background TTS generation ---
+  // --- Eager processing: background TTS generation with queue ---
   let eagerGenerationId = 0
   let eagerChapterIndex = -1
-  let eagerProgress = 0  // 0-100, for UI feedback
+  let eagerChunks: { audio: Float32Array; sampleRate: number }[] = []
+  let eagerSegmentTexts: string[] = []
+  let eagerVoice = ''
+  let eagerSpeed = 0
+  let eagerQueue: number[] = []  // chapters waiting to be eagerly generated
 
-  function eagerGenerate(chapterIndex: number) {
+  function updateEagerStore() {
+    const s = new Set<number>(eagerQueue)
+    if (eagerChapterIndex >= 0) s.add(eagerChapterIndex)
+    $eagerProcessingChapters = s
+  }
+
+  /** Queue the next N uncached chapters starting from startIdx */
+  function startEagerQueue(startIdx: number) {
+    if (!$fileName) return
+    const queue: number[] = []
+    for (let i = startIdx; i < $parsedChapters.length && queue.length < EAGER_LOOKAHEAD; i++) {
+      if (!getCachedAudio($fileName, i, $selectedVoice, $playbackSpeed)) {
+        queue.push(i)
+      }
+    }
+    if (queue.length === 0) return
+    eagerQueue = queue
+    updateEagerStore()
+    processNextEagerItem()
+  }
+
+  /** Process the next item from the eager queue */
+  function processNextEagerItem() {
+    if (eagerQueue.length === 0) {
+      eagerChapterIndex = -1
+      updateEagerStore()
+      return
+    }
+
+    const chapterIndex = eagerQueue[0]
     const manager = getTTSManagerInstance()
     if (manager.getStatus() !== 'ready') return
     if (!$fileName || chapterIndex < 0 || chapterIndex >= $parsedChapters.length) return
 
-    // Already cached?
-    // Check for any speed — eager gen uses 1x raw audio, cache is speed-independent
-    // Actually cache is keyed by speed, so check current speed
-    if (getCachedAudio($fileName, chapterIndex, $selectedVoice, $playbackSpeed)) return
+    // Already cached? (might have been cached while queued)
+    if (getCachedAudio($fileName, chapterIndex, $selectedVoice, $playbackSpeed)) {
+      eagerQueue = eagerQueue.slice(1)
+      updateEagerStore()
+      processNextEagerItem()
+      return
+    }
 
     // Don't start eager gen if playback generation is active
     if (bufferState === 'buffering' || bufferState === 'rebuffering' ||
@@ -580,37 +621,33 @@
 
     const genId = ++eagerGenerationId
     eagerChapterIndex = chapterIndex
-    eagerProgress = 0
+    eagerChunks = []
+    eagerSegmentTexts = []
+    eagerVoice = $selectedVoice
+    eagerSpeed = $playbackSpeed
+    updateEagerStore()
 
     const text = $parsedChapters[chapterIndex].text
     const voice = $selectedVoice
     const speed = $playbackSpeed
     const fn = $fileName
-    const eagerChunks: { audio: Float32Array; sampleRate: number }[] = []
-    const eagerSegments: TimedSegment[] = []
-    let eagerTotalDuration = 0
 
     manager.setOnChunk((chunk: TTSChunk) => {
       if (genId !== eagerGenerationId) return
       eagerChunks.push({ audio: chunk.audio, sampleRate: chunk.sampleRate })
-      const rawDur = chunk.audio.length / chunk.sampleRate
-      eagerTotalDuration += rawDur
-      eagerSegments.push({ text: chunk.text, start: 0, end: 0 }) // timing computed at play time
-      eagerProgress = Math.min(99, eagerChunks.length * 5) // rough progress
+      eagerSegmentTexts.push(chunk.text)
     })
 
     manager.setOnDone(() => {
       if (genId !== eagerGenerationId) return
-      eagerProgress = 100
 
       if (fn && eagerChunks.length > 0) {
-        // Build proper timed segments for caching
         const ctx = ensureAudioCtx()
         let t = 0
         const timedSegments: TimedSegment[] = []
         for (let i = 0; i < eagerChunks.length; i++) {
           const audioBuffer = float32ToAudioBuffer(ctx, eagerChunks[i].audio, eagerChunks[i].sampleRate, speed)
-          timedSegments.push({ text: eagerSegments[i].text, start: t, end: t + audioBuffer.duration })
+          timedSegments.push({ text: eagerSegmentTexts[i], start: t, end: t + audioBuffer.duration })
           t += audioBuffer.duration
         }
         setCachedAudio(fn, chapterIndex, voice, speed, {
@@ -620,24 +657,215 @@
       }
 
       eagerChapterIndex = -1
-      eagerProgress = 0
+      eagerChunks = []
+      eagerSegmentTexts = []
+
+      // Move to next item in queue
+      eagerQueue = eagerQueue.filter(i => i !== chapterIndex)
+      updateEagerStore()
+      processNextEagerItem()
     })
 
     manager.setOnError(() => {
       if (genId !== eagerGenerationId) return
       eagerChapterIndex = -1
-      eagerProgress = 0
+      eagerChunks = []
+      eagerSegmentTexts = []
+      // Skip failed chapter, try next
+      eagerQueue = eagerQueue.filter(i => i !== chapterIndex)
+      updateEagerStore()
+      processNextEagerItem()
     })
 
     manager.generate(text, voice)
   }
 
+  function eagerGenerate(chapterIndex: number) {
+    startEagerQueue(chapterIndex)
+  }
+
+  /** Take over an in-flight eager generation for playback instead of restarting */
+  function playFromEager() {
+    const manager = getTTSManagerInstance()
+
+    loading = true
+    streamingDone = false
+    bufferState = 'buffering'
+    bufferProgress = 0
+    currentTargetBuffer = BUFFER_MIN
+    bufferMonitor.reset()
+    const gen = ++playGeneration
+
+    // Stop eager gen's ownership — playback now owns the worker callbacks
+    eagerChapterIndex = -1
+
+    // Keep queue populated for sidebar display — remaining items process after onDone
+    eagerQueue = eagerQueue.filter(i => i !== $currentChapterIndex)
+    updateEagerStore()
+
+    const ctx = ensureAudioCtx()
+    if (ctx.state === 'suspended') ctx.resume()
+
+    decodedChunks = []
+    totalAudioDuration = 0
+    $segments = []
+    $currentSegmentIndex = -1
+    currentTime = 0
+    duration = 0
+    cachedAudioChunks = []
+
+    const allSegments: TimedSegment[] = []
+
+    function startPlayback() {
+      bufferState = 'playing'
+      loading = false
+      bufferProgress = 100
+
+      if (ctx.state === 'suspended') ctx.resume()
+      playbackStartCtxTime = ctx.currentTime
+      playbackStartOffset = currentTime
+      $isPlaying = true
+
+      for (let i = 0; i < decodedChunks.length; i++) {
+        const chunkEnd = decodedChunks[i].startTime + decodedChunks[i].buffer.duration
+        if (chunkEnd <= currentTime) continue
+        scheduleOneChunk(i)
+      }
+      startTimeTracking()
+    }
+
+    // Seed playback state with chunks already accumulated by eager gen
+    for (const chunk of eagerChunks) {
+      const audioBuffer = float32ToAudioBuffer(ctx, chunk.audio, chunk.sampleRate, $playbackSpeed)
+      const chunkStart = totalAudioDuration
+      const segIdx = cachedAudioChunks.length
+      const segText = eagerSegmentTexts[segIdx] ?? ''
+
+      const segment: TimedSegment = { text: segText, start: chunkStart, end: chunkStart + audioBuffer.duration }
+      allSegments.push(segment)
+
+      cachedAudioChunks.push({ audio: chunk.audio, sampleRate: chunk.sampleRate })
+      decodedChunks = [...decodedChunks, { buffer: audioBuffer, startTime: chunkStart }]
+      totalAudioDuration += audioBuffer.duration
+
+      bufferMonitor.recordChunk(chunk.audio.length / chunk.sampleRate)
+    }
+    $segments = [...allSegments]
+    duration = totalAudioDuration
+
+    if (bufferMonitor.hasEnoughData()) {
+      const G = bufferMonitor.getGenerationRate()!
+      currentTargetBuffer = computeTargetBuffer(G, $playbackSpeed)
+    }
+
+    if (totalAudioDuration >= currentTargetBuffer && decodedChunks.length > 0) {
+      startPlayback()
+    }
+
+    manager.setOnChunk((chunk: TTSChunk) => {
+      if (gen !== playGeneration) return
+
+      const rawDuration = chunk.audio.length / chunk.sampleRate
+      bufferMonitor.recordChunk(rawDuration)
+
+      const audioBuffer = float32ToAudioBuffer(ctx, chunk.audio, chunk.sampleRate, $playbackSpeed)
+      const chunkStart = totalAudioDuration
+
+      const segment: TimedSegment = { text: chunk.text, start: chunkStart, end: chunkStart + audioBuffer.duration }
+      allSegments.push(segment)
+      $segments = [...allSegments]
+
+      cachedAudioChunks.push({ audio: chunk.audio, sampleRate: chunk.sampleRate })
+      decodedChunks = [...decodedChunks, { buffer: audioBuffer, startTime: chunkStart }]
+      totalAudioDuration += audioBuffer.duration
+      duration = totalAudioDuration
+
+      if (bufferMonitor.hasEnoughData()) {
+        const G = bufferMonitor.getGenerationRate()!
+        currentTargetBuffer = computeTargetBuffer(G, $playbackSpeed)
+      }
+
+      if (bufferState === 'buffering') {
+        bufferProgress = currentTargetBuffer > 0
+          ? Math.min(99, (totalAudioDuration / currentTargetBuffer) * 100)
+          : 0
+        if (totalAudioDuration >= currentTargetBuffer) {
+          startPlayback()
+        }
+      } else if (bufferState === 'rebuffering') {
+        const resumeTarget = Math.min(BUFFER_MAX, RESUME_BUFFER_BASE * Math.pow(2, rebufferCount - 1))
+        const bufferLead = totalAudioDuration - currentTime
+        bufferProgress = Math.min(99, (bufferLead / resumeTarget) * 100)
+        if (bufferLead >= resumeTarget) {
+          startPlayback()
+        }
+      } else if (bufferState === 'playing' && $isPlaying) {
+        if (bufferUnderrunCtxTime !== null) {
+          playbackStartCtxTime += (ctx.currentTime - bufferUnderrunCtxTime)
+          bufferUnderrunCtxTime = null
+        }
+        scheduleOneChunk(decodedChunks.length - 1)
+      }
+    })
+
+    manager.setOnDone(() => {
+      if (gen !== playGeneration) return
+      streamingDone = true
+
+      if (bufferState === 'buffering' || bufferState === 'rebuffering') {
+        if (decodedChunks.length > 0) {
+          startPlayback()
+        } else {
+          loading = false
+          bufferState = 'idle'
+        }
+      }
+
+      if ($fileName && cachedAudioChunks.length > 0) {
+        setCachedAudio($fileName, $currentChapterIndex, $selectedVoice, $playbackSpeed, {
+          audioChunks: cachedAudioChunks,
+          segments: [...allSegments],
+        })
+      }
+
+      // Race fix: if all audio was consumed before streamingDone became true
+      if (bufferState === 'playing' && activeSourceNodes.length === 0 && $isPlaying) {
+        $isPlaying = false
+        $currentSegmentIndex = -1
+        stopTimeTracking()
+        if ($autoAdvance && $currentChapterIndex < $parsedChapters.length - 1) {
+          advanceToNextChapter()
+        }
+        return
+      }
+
+      if ($eagerProcessing && $autoAdvance) {
+        startEagerQueue($currentChapterIndex + 1)
+      }
+    })
+
+    manager.setOnError((error: string) => {
+      if (gen !== playGeneration) return
+      console.error('TTS generation failed:', error)
+      loading = false
+      streamingDone = true
+      bufferState = 'idle'
+    })
+
+    // Clear eager state — playback now owns these chunks
+    eagerChunks = []
+    eagerSegmentTexts = []
+  }
+
   function cancelEagerGen() {
-    if (eagerChapterIndex >= 0) {
+    if (eagerChapterIndex >= 0 || eagerQueue.length > 0) {
       eagerGenerationId++
       getTTSManagerInstance().cancel()
       eagerChapterIndex = -1
-      eagerProgress = 0
+      eagerChunks = []
+      eagerSegmentTexts = []
+      eagerQueue = []
+      updateEagerStore()
     }
   }
 
@@ -647,6 +875,11 @@
     prevChapterIndex = $currentChapterIndex
     cancelEagerGen()
     stop()
+  }
+
+  // Cancel eager generation when toggle is turned off
+  $: if (!$eagerProcessing) {
+    cancelEagerGen()
   }
 
   // Trigger eager generation when chapter changes and nothing is playing
@@ -672,6 +905,8 @@
   $: hasAudio = decodedChunks.length > 0
   $: progress = duration > 0 ? (currentTime / duration) * 100 : 0
   $: isBuffering = bufferState === 'buffering' || bufferState === 'rebuffering'
+  $: volumePercent = Math.round($volume * 100)
+  $: volumeIcon = $volume === 0 ? 'muted' : $volume < 0.5 ? 'low' : 'high'
 </script>
 
 <footer class="relative border-t border-spine-900/[0.06] bg-parchment-50 shadow-[0_-1px_12px_rgba(0,0,0,0.03)]">
@@ -705,18 +940,7 @@
       ></div>
     </div>
     <div class="text-xs text-amber-accent/70 text-center py-1">
-      {$preprocessMode ? 'Preprocessing' : bufferState === 'rebuffering' ? 'Rebuffering' : 'Buffering'}...
-      {$preprocessMode ? formatTime(totalAudioDuration) + ' generated' : Math.round(bufferProgress) + '%'}
-    </div>
-  {:else if eagerChapterIndex >= 0}
-    <div class="relative h-0.5 w-full bg-spine-900/[0.04]">
-      <div
-        class="absolute left-0 top-0 h-full bg-spine-800/20 transition-all duration-300"
-        style="width: {eagerProgress}%"
-      ></div>
-    </div>
-    <div class="text-xs text-spine-800/30 text-center py-1">
-      Pre-generating {$bookType === 'pdf' ? `Pg. ${eagerChapterIndex + 1}` : ($parsedChapters[eagerChapterIndex]?.title ?? `Ch. ${eagerChapterIndex + 1}`)}...
+      {bufferState === 'rebuffering' ? 'Rebuffering' : 'Buffering'}... {Math.round(bufferProgress)}%
     </div>
   {:else if $ttsModelStatus === 'loading'}
     <div class="text-xs text-amber-accent/70 text-center py-1">Loading TTS model...</div>
@@ -815,22 +1039,40 @@
     <!-- Spacer -->
     <div class="flex-1"></div>
 
-    <!-- Voice selector -->
-    <div class="flex items-center gap-2">
-      <svg class="h-4 w-4 text-spine-900/30" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
-      </svg>
-      <select
-        bind:value={$selectedVoice}
-        class="rounded-lg border border-spine-900/[0.08] bg-parchment-100/80 px-3 py-1.5 font-sans text-sm text-spine-800 transition-colors hover:border-amber-accent/30 focus:border-amber-accent/50 focus:outline-none focus:ring-1 focus:ring-amber-accent/20"
+    <!-- Volume control -->
+    <div class="flex items-center gap-1.5 group/vol">
+      <button
+        class="flex h-7 w-7 items-center justify-center rounded-md text-spine-800/40 transition-colors hover:text-spine-800/70"
+        onclick={() => $volume = $volume > 0 ? 0 : 1}
+        title="{volumePercent}% volume"
       >
-        {#each VOICES as v}
-          <option value={v.id}>{v.label}</option>
-        {/each}
-      </select>
+        {#if volumeIcon === 'muted'}
+          <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M17.25 9.75L19.5 12m0 0l2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6l4.72-4.72a.75.75 0 011.28.531V18.94a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.506-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.395C2.806 8.757 3.63 8.25 4.51 8.25H6.75z" />
+          </svg>
+        {:else if volumeIcon === 'low'}
+          <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
+            <path stroke-linecap="round" stroke-linejoin="round" d="M16.463 8.288a5.25 5.25 0 010 7.424" />
+          </svg>
+        {:else}
+          <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
+          </svg>
+        {/if}
+      </button>
+      <input
+        type="range"
+        min="0"
+        max="1"
+        step="0.05"
+        bind:value={$volume}
+        class="vol-slider h-1 w-16 cursor-pointer appearance-none rounded-full bg-spine-900/[0.08] accent-amber-accent transition-all [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-amber-accent"
+        title="{volumePercent}%"
+      />
     </div>
 
-    <!-- Speed button (clickable cycle) -->
+    <!-- Speed button -->
     <button
       class="rounded-lg border border-spine-900/[0.08] bg-parchment-100/80 px-2.5 py-1 font-serif text-sm font-semibold tabular-nums text-spine-800 transition-colors hover:border-amber-accent/30 hover:text-amber-accent"
       onclick={cycleSpeed}
@@ -849,39 +1091,25 @@
         />
         <span class="text-xs text-spine-800/40">Autoplay</span>
       </label>
-      <label class="flex items-center gap-1.5 cursor-pointer select-none" title="Generate all audio before playing (no interruptions)">
-        <input
-          type="checkbox"
-          bind:checked={$preprocessMode}
-          class="h-3.5 w-3.5 rounded border-spine-900/20 text-amber-accent accent-amber-accent cursor-pointer"
-        />
-        <span class="text-xs text-spine-800/40">Preprocess</span>
-      </label>
       <button
         class="flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs transition-all duration-300 select-none
           {$eagerProcessing
-            ? eagerChapterIndex >= 0
+            ? $eagerProcessingChapters.size > 0
               ? 'border-amber-accent/40 bg-amber-accent/10 text-amber-accent'
               : 'border-emerald-400/30 bg-emerald-400/10 text-emerald-400/80'
             : 'border-spine-900/[0.08] bg-parchment-100/80 text-spine-800/40 hover:border-amber-accent/30 hover:text-spine-800/60'
           }"
         onclick={() => $eagerProcessing = !$eagerProcessing}
-        title={$eagerProcessing ? 'Disable background audio generation' : 'Generate audio in the background before you press play'}
+        title={$eagerProcessing ? 'Disable background audio generation' : 'Pre-generate audio for upcoming chapters'}
       >
-        {#if $eagerProcessing && eagerChapterIndex >= 0}
-          <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none">
-            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25"></circle>
-            <path d="M4 12a8 8 0 018-8" stroke="currentColor" stroke-width="3" stroke-linecap="round" class="opacity-75"></path>
-          </svg>
-          <span>{$bookType === 'pdf' ? `Pg. ${eagerChapterIndex + 1}` : ($parsedChapters[eagerChapterIndex]?.title ?? `Ch. ${eagerChapterIndex + 1}`)}</span>
+        {#if $eagerProcessing && $eagerProcessingChapters.size > 0}
+          <span class="inline-block h-1.5 w-1.5 rounded-full bg-amber-accent animate-pulse"></span>
         {:else if $eagerProcessing}
           <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" />
           </svg>
-          <span>Eager</span>
-        {:else}
-          <span>Eager</span>
         {/if}
+        <span>Eager</span>
       </button>
     </div>
 
