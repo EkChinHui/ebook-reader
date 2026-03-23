@@ -10,8 +10,8 @@
   }
   let { onGoHome }: Props = $props()
 
-  let uploading = false
-  let error = ''
+  let uploading = $state(false)
+  let error = $state('')
   let fileInput: HTMLInputElement
 
   function openFilePicker() {

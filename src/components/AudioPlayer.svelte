@@ -9,16 +9,6 @@
 
   const KOKORO_VOICES = [
     { id: 'af_heart', label: 'Heart' },
-    { id: 'af_bella', label: 'Bella' },
-    { id: 'af_nicole', label: 'Nicole' },
-    { id: 'af_sarah', label: 'Sarah' },
-    { id: 'af_sky', label: 'Sky' },
-    { id: 'am_adam', label: 'Adam' },
-    { id: 'am_michael', label: 'Michael' },
-    { id: 'bf_emma', label: 'Emma' },
-    { id: 'bf_isabella', label: 'Isabella' },
-    { id: 'bm_george', label: 'George' },
-    { id: 'bm_lewis', label: 'Lewis' },
   ]
 
   // --- Browser TTS state ---
@@ -29,14 +19,39 @@
   let browserPaused = false
   let browserKeepAliveTimer: ReturnType<typeof setInterval> | null = null
 
+  // Preferred voices ranked best-first per gender (cross-platform)
+  const PREFERRED_FEMALE = ['Samantha', 'Google US English', 'Zira', 'Karen', 'Fiona', 'Victoria']
+  const PREFERRED_MALE = ['Daniel', 'Alex', 'Google UK English Male', 'David', 'James', 'Tom']
+
+  function pickBest(enVoices: SpeechSynthesisVoice[], preferred: string[]): SpeechSynthesisVoice | undefined {
+    for (const name of preferred) {
+      const match = enVoices.find(v => v.name.includes(name))
+      if (match) return match
+    }
+    return undefined
+  }
+
   function loadBrowserVoices() {
     const voices = speechSynthesis.getVoices()
-    browserVoices = voices.filter(v => v.lang.startsWith('en'))
-    if (browserVoices.length === 0) browserVoices = voices
+    const enVoices = voices.filter(v => v.lang.startsWith('en'))
+    const pool = enVoices.length > 0 ? enVoices : voices
+
+    const female = pickBest(pool, PREFERRED_FEMALE)
+    const male = pickBest(pool, PREFERRED_MALE)
+
+    // Show curated pair, falling back to first two available voices
+    const curated: SpeechSynthesisVoice[] = []
+    if (female) curated.push(female)
+    if (male) curated.push(male)
+    if (curated.length === 0 && pool.length > 0) curated.push(pool[0])
+    if (curated.length < 2 && pool.length > 1) {
+      const extra = pool.find(v => !curated.includes(v))
+      if (extra) curated.push(extra)
+    }
+
+    browserVoices = curated
     if (!$browserVoiceURI && browserVoices.length > 0) {
-      // Prefer a default English voice
-      const preferred = browserVoices.find(v => v.default) || browserVoices[0]
-      $browserVoiceURI = preferred.voiceURI
+      $browserVoiceURI = browserVoices[0].voiceURI
     }
   }
 
@@ -1283,8 +1298,8 @@
         class="max-w-[120px] rounded-lg border border-spine-900/[0.08] bg-parchment-100/80 px-2 py-1 font-sans text-xs text-spine-800 transition-colors hover:border-amber-accent/30 focus:border-amber-accent/50 focus:outline-none focus:ring-1 focus:ring-amber-accent/20"
       >
         {#if isBrowser}
-          {#each browserVoices as v}
-            <option value={v.voiceURI}>{v.name.replace(/^(Microsoft |Google |Apple )/, '')}</option>
+          {#each browserVoices as v, i}
+            <option value={v.voiceURI}>{i === 0 ? 'Female' : 'Male'} — {v.name.replace(/^(Microsoft |Google |Apple )/, '')}</option>
           {/each}
         {:else}
           {#each KOKORO_VOICES as v}
